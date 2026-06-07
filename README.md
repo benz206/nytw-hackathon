@@ -110,20 +110,36 @@ something unambiguous like `merge PR #123`.
 
 Perseus setup is operator-side. Do not have the agent run login commands.
 
-Install and authenticate Perseus according to your internal instructions, then
-index every allowlisted repo:
+Install and authenticate Perseus, then index every allowlisted repo:
 
 ```bash
-perseus index /path/to/repo
+curl -fsSL https://perseus.computer/install.sh | sh
+perseus login
+perseus rules add
+cd /path/to/repo
+perseus doctor
+perseus index
 perseus index --status
+```
+
+Perseus stores its auth token under `~/.config/perseus/`. Keep login as a
+human/operator action; the Intern can check status and query indexes, but should
+not initiate OAuth in an agent session.
+
+This repo includes an operator preflight:
+
+```bash
+intern perseus doctor --cwd /path/to/repo
 ```
 
 Re-index after pulls or on a timer so the coder subagent gets fresh search
 results. The coder prompt allows read-only Perseus commands such as:
 
 ```bash
+perseus doctor
 perseus index --status
 perseus query "where is authentication handled?"
+perseus query benz206/nytw-hackathon "where is authentication handled?"
 perseus open path/to/file.py:42
 ```
 
@@ -259,6 +275,7 @@ intern_bot/
   heartbeat.py    OpenClaw-style heartbeat loop and cap checks
   memory.py       Markdown audit log and daily accounting
   merge_guard.py  hard merge/force-push blocker
+  perseus.py      Perseus CLI preflight checks
   slack/          Slack orchestrator prompt, heartbeat prompt, tool defaults
   linear/         Linear planner prompt and MCP tool defaults
   codebase/       Coder prompt and repo/Bash tool defaults
@@ -266,6 +283,7 @@ intern_bot/
 tests/
   test_memory.py
   test_merge_guard.py
+  test_perseus.py
 ```
 
 ## Common Commands
@@ -275,6 +293,7 @@ source .venv/bin/activate
 pytest
 python -m compileall intern_bot tests
 intern --help
+intern perseus doctor
 intern heartbeat-once
 ```
 
@@ -283,8 +302,9 @@ intern heartbeat-once
 - `python: command not found`: use `python3` to create the venv, then activate it.
 - `intern: command not found`: activate `.venv` or run `.venv/bin/intern`.
 - Missing Claude SDK: run `pip install -r requirements.txt && pip install -e .`.
+- Missing Perseus CLI: run `curl -fsSL https://perseus.computer/install.sh | sh`,
+  then `perseus login` and `perseus index` as the operator.
 - Heartbeat does nothing: check `INTERN_PAUSED`, quiet hours, `.intern/memory.md`
   daily caps, and `INTERN_DAILY_SPEND_CAP_USD`.
 - Merge command denied: expected behavior. Get explicit human approval before
   setting merge authorization.
-

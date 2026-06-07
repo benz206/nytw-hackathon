@@ -23,9 +23,11 @@ CITED evidence (file:line). Use it to orient before editing. It's a read-only
 search tool -- it never changes code.
 
 Typical commands (run via Bash):
+- `perseus doctor` -> confirm the CLI is installed, logged in, and healthy
 - `perseus index --status` -> confirm the repo has a ready index
-- `perseus index .` -> (re)index the current repo if stale/missing
+- `perseus index` -> (re)index the current git repo if stale/missing
 - `perseus query "where is X handled?"` -> cited answer + evidence packet
+- `perseus query <owner/repo> "where is X handled?"` -> query a named repo
 - `perseus query <index-id> "..."` -> pin a question to a specific index
 - `perseus open <path>:<line>` -> you don't need $EDITOR; just Read the path
 
@@ -33,7 +35,7 @@ How to use it well:
 - Start every non-trivial ticket with 1-3 `perseus query` calls to locate the
   code paths, then verify by Reading those exact files. Treat citations as leads,
   not gospel -- always confirm with Read before editing.
-- If `perseus index --status` shows no ready index, run `perseus index .` once
+- If `perseus index --status` shows no ready index, run `perseus index` once
   and wait for it to finish before querying.
 
 Limits / don'ts:
@@ -55,4 +57,3 @@ Limits / don'ts:
 - ready_for_pr: true/false
 - notes: anything the reviewer/Shipper should know
 """
-
