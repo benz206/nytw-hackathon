@@ -1,0 +1,105 @@
+name: Replit Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Global lock: only one preview deploy at a time (last PR wins).
+concurrency:
+  group: replit-preview
+  cancel-in-progress: true
+
+env:
+  REPLIT_USERNAME: ${{ vars.REPLIT_USERNAME }}
+  APP_NAME: ${{ vars.APP_NAME }}
+  DEPLOY_REPO: ${{ vars.DEPLOY_REPO }}        # owner/repo connected to Replit
+  DEPLOY_BRANCH: replit-preview               # the single branch Replit watches
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate config
+        env:
+          DEPLOY_REPO_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${REPLIT_USERNAME:?Set repo variable REPLIT_USERNAME}"
+          : "${APP_NAME:?Set repo variable APP_NAME}"
+          : "${DEPLOY_REPO:?Set repo variable DEPLOY_REPO (owner/repo)}"
+          if [ -z "${DEPLOY_REPO_TOKEN:-}" ]; then
+            echo "::error::Missing secret DEPLOY_REPO_TOKEN (PAT with Contents:write on $DEPLOY_REPO)"
+            exit 1
+          fi
+
+      - name: Push PR code to Replit branch
+        env:
+          DEPLOY_REPO_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add repl "https://x-access-token:${DEPLOY_REPO_TOKEN}@github.com/${DEPLOY_REPO}.git"
+          if ! git ls-remote repl >/dev/null 2>&1; then
+            echo "::error::Cannot reach deploy repo ${DEPLOY_REPO}. Check it exists and the token has push access."
+            exit 1
+          fi
+          # Force-push for idempotency across commits / reopened PRs (overwrites branch cleanly).
+          git push repl "HEAD:refs/heads/${DEPLOY_BRANCH}" --force
+
+      - name: Trigger Replit redeploy (best-effort)
+        env:
+          REPLIT_TOKEN: ${{ secrets.REPLIT_TOKEN }}
+          REPL_ID: ${{ secrets.REPL_ID }}
+        run: |
+          set -uo pipefail
+          if [ -z "${REPLIT_TOKEN:-}" ] || [ -z "${REPL_ID:-}" ]; then
+            echo "::notice::REPLIT_TOKEN/REPL_ID not set - skipping auto-redeploy. Code synced; click Redeploy in Replit."
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "https://replit.com/api/v1/repls/${REPL_ID}/deploy" \
+            -H "Authorization: Bearer ${REPLIT_TOKEN}" \
+            -H "Content-Type: application/json")
+          if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+            echo "::notice::Replit redeploy triggered (HTTP $code)."
+          else
+            echo "::warning::Redeploy trigger returned HTTP $code (undocumented API). Code is synced; redeploy manually if needed."
+          fi
+
+      - name: Comment preview URL
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const pr = Number(process.env.PR_NUMBER);
+            const url = `https://${process.env.APP_NAME}.${process.env.REPLIT_USERNAME}.replit.app`;
+            const marker = "<!-- replit-preview-bot -->";
+            const body = [
+              marker,
+              `🚀 Preview: ${url}`,
+              ``,
+              `_Shared Replit preview - currently serving PR #${pr} (latest deploy wins)._`,
+            ].join("\n");
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: pr,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
+            }

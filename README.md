@@ -480,3 +480,37 @@ intern heartbeat-once
   daily caps, and `INTERN_DAILY_SPEND_CAP_USD`.
 - Merge command denied: expected behavior. Get explicit human approval before
   setting merge authorization.
+
+## PR Preview (Replit)
+
+Each PR is mirrored to a single shared Replit preview via
+`.github/workflows/preview.yml`.
+
+Flow: intern opens/updates a PR -> Action force-pushes the PR code to the
+`replit-preview` branch of the deploy repo -> Replit (autoscale, connected to
+that branch) serves it -> a single PR comment posts the static preview URL.
+
+URL: `https://<APP_NAME>.<REPLIT_USERNAME>.replit.app`
+
+Limitation: one preview is live at a time (latest deploy wins). A global
+concurrency lock serializes deploys.
+
+### GitHub configuration (source repo)
+
+Variables (Settings -> Secrets and variables -> Actions -> Variables):
+- `REPLIT_USERNAME`
+- `APP_NAME`
+- `DEPLOY_REPO` - deploy repo as `owner/repo`
+
+Secrets:
+- `DEPLOY_REPO_TOKEN` - PAT with Contents:write on the deploy repo (required).
+- `REPLIT_TOKEN`, `REPL_ID` - optional, enable best-effort auto-redeploy. If
+  unset, code still syncs and you click Redeploy in Replit.
+
+### Replit setup (deploy repo)
+
+- Create the deploy repo and connect it to Replit on branch `replit-preview`.
+- Enable Autoscale deployment.
+- App binds `0.0.0.0` and listens on `process.env.PORT` (Python: `os.environ["PORT"]`).
+  The included `intern_bot/preview_server.py` already does this and serves a
+  status page plus a `/healthz` health check.

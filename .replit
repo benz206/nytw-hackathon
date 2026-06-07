@@ -1,0 +1,11 @@
+run = "python -m intern_bot.preview_server"
+entrypoint = "intern_bot/preview_server.py"
+
+[deployment]
+deploymentTarget = "cloudrun"   # Autoscale
+run = ["python", "-m", "intern_bot.preview_server"]
+build = ["pip", "install", "-r", "requirements.txt"]
+
+[[ports]]
+localPort = 8080
+externalPort = 80
