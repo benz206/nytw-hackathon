@@ -28,6 +28,20 @@ class Poster(Protocol):
         """Post a message to Slack."""
 
 
+class ActivityIndicator(Protocol):
+    async def mark_online(self) -> None:
+        """Mark the Intern active/online in Slack."""
+
+    async def start_typing(self, *, channel: str, thread_ts: str) -> None:
+        """Show a Slack assistant typing/status indicator."""
+
+    async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
+        """Clear a Slack assistant typing/status indicator."""
+
+
+Logger = Callable[[str], None]
+
+
 @dataclass(frozen=True)
 class SlackConfig:
     app_id: str | None = None
@@ -93,6 +107,10 @@ class SlackEnvCheck:
         lines.append(
             "Socket Mode: ready" if not socket_missing else f"Socket Mode: missing {', '.join(socket_missing)}"
         )
+        lines.append(
+            "Bot online indicator: enable Slack app Bot User > Always Show My Bot as Online; "
+            "Socket Mode cannot force the green dot with users.setPresence."
+        )
         return lines
 
 
@@ -108,7 +126,36 @@ class SlackWebPoster:
             payload["thread_ts"] = thread_ts
         await asyncio.to_thread(self._post_json, "https://slack.com/api/chat.postMessage", payload)
 
-    def _post_json(self, url: str, payload: dict[str, str]) -> None:
+    async def mark_online(self) -> None:
+        await asyncio.to_thread(
+            self._post_json,
+            "https://slack.com/api/users.setPresence",
+            {"presence": "auto"},
+            failure_label="Slack presence update failed",
+        )
+
+    async def start_typing(self, *, channel: str, thread_ts: str) -> None:
+        await asyncio.to_thread(
+            self._post_json,
+            "https://slack.com/api/assistant.threads.setStatus",
+            {
+                "channel_id": channel,
+                "thread_ts": thread_ts,
+                "status": "is typing...",
+                "loading_messages": ["is typing..."],
+            },
+            failure_label="Slack typing indicator failed",
+        )
+
+    async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
+        await asyncio.to_thread(
+            self._post_json,
+            "https://slack.com/api/assistant.threads.setStatus",
+            {"channel_id": channel, "thread_ts": thread_ts, "status": ""},
+            failure_label="Slack typing indicator clear failed",
+        )
+
+    def _post_json(self, url: str, payload: dict[str, Any], *, failure_label: str = "Slack post failed") -> None:
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
             url,
@@ -123,10 +170,10 @@ class SlackWebPoster:
             with request.urlopen(req, timeout=30) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except error.URLError as exc:
-            raise RuntimeError(f"Slack post failed: {exc}") from exc
+            raise RuntimeError(f"{failure_label}: {exc}") from exc
 
         if not data.get("ok"):
-            raise RuntimeError(f"Slack post failed: {data.get('error', 'unknown_error')}")
+            raise RuntimeError(f"{failure_label}: {data.get('error', 'unknown_error')}")
 
 
 class PrintPoster:
@@ -136,6 +183,15 @@ class PrintPoster:
         target = channel if thread_ts is None else f"{channel} thread {thread_ts}"
         print(f"[slack dry-run -> {target}] {text}")
 
+    async def mark_online(self) -> None:
+        print("[slack dry-run] presence=auto")
+
+    async def start_typing(self, *, channel: str, thread_ts: str) -> None:
+        print(f"[slack dry-run] typing on {channel} thread {thread_ts}")
+
+    async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
+        print(f"[slack dry-run] clear typing on {channel} thread {thread_ts}")
+
 
 async def handle_slack_text(
     text: str,
@@ -143,24 +199,74 @@ async def handle_slack_text(
     channel: str,
     user: str | None = None,
     thread_ts: str | None = None,
+    event_type: str = "message",
+    event_ts: str | None = None,
+    typing_thread_ts: str | None = None,
     poster: Poster,
+    activity: ActivityIndicator | None = None,
     runner: Runner | None = None,
     memory: InternMemory | None = None,
+    logger: Logger | None = None,
+    ensure_reply: bool = True,
 ) -> TurnResult:
     """Run one Intern turn for a Slack message and post the reply."""
+    if logger is not None:
+        logger(
+            _format_received_log(
+                event_type,
+                channel=channel,
+                user=user,
+                thread_ts=thread_ts,
+                event_ts=event_ts,
+                text=text,
+            )
+        )
+
     prompt = format_slack_prompt(text, channel=channel, user=user, thread_ts=thread_ts)
+    status_thread_ts = typing_thread_ts or thread_ts
+    activity = activity or poster if _supports_activity(poster) else activity
+    if activity is not None:
+        await _best_effort_activity(activity.mark_online(), logger=logger)
+    if activity is not None and status_thread_ts:
+        await _best_effort_activity(
+            activity.start_typing(channel=channel, thread_ts=status_thread_ts),
+            logger=logger,
+        )
+
     try:
         result = await (runner or run_turn)(prompt)
     except Exception as exc:
         reply = f"Intern runtime error: {_one_line(str(exc), limit=300)}"
-        await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+        try:
+            await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+        finally:
+            if activity is not None and status_thread_ts:
+                await _best_effort_activity(
+                    activity.stop_typing(channel=channel, thread_ts=status_thread_ts),
+                    logger=logger,
+                )
         if memory is not None:
             memory.append_event("slack_turn_error", _one_line(text))
         return TurnResult(text=reply)
 
     reply = result.text.strip()
+    if ensure_reply and not reply:
+        reply = "I got your message, but the Intern runtime did not return a reply."
+        result.text = reply
     if reply:
-        await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+        try:
+            await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+        finally:
+            if activity is not None and status_thread_ts:
+                await _best_effort_activity(
+                    activity.stop_typing(channel=channel, thread_ts=status_thread_ts),
+                    logger=logger,
+                )
+    elif activity is not None and status_thread_ts:
+        await _best_effort_activity(
+            activity.stop_typing(channel=channel, thread_ts=status_thread_ts),
+            logger=logger,
+        )
     if memory is not None:
         memory.append_event("slack_turn", _one_line(text), cost_usd=result.total_cost_usd)
     return result
@@ -179,6 +285,17 @@ def format_slack_prompt(
     if thread_ts:
         parts.append(f"Slack thread_ts: {thread_ts}")
     parts.append("")
+    parts.append("Slack response guidance:")
+    parts.append("- Answer the latest user message directly.")
+    parts.append("- Sound like a real intern in Slack: short, eager, specific, no assistant-y filler.")
+    parts.append(
+        "- For casual preference/opinion questions, pick a concrete answer with a short reason; "
+        "do not dodge with generic flattery."
+    )
+    parts.append("- Keep casual replies to 1-2 short sentences.")
+    parts.append("- Do not dump a long capability list or repeat sections unless the user asked for detail.")
+    parts.append("")
+    parts.append("User message:")
     parts.append(text)
     return "\n".join(parts)
 
@@ -206,7 +323,7 @@ def verify_slack_signature(
 
 
 def run_socket_mode(config: SlackConfig) -> None:
-    """Start a Slack Socket Mode app for app mentions."""
+    """Start a Slack Socket Mode app for mentions, DMs, and thread replies."""
     missing = config.missing_for_socket_mode()
     if missing:
         raise RuntimeError(f"Missing required Slack env vars for Socket Mode: {', '.join(missing)}")
@@ -221,6 +338,10 @@ def run_socket_mode(config: SlackConfig) -> None:
     app = _create_single_workspace_bolt_app(config)
     runtime_config = InternConfig.from_env()
     memory = InternMemory(runtime_config.memory_path)
+    activity = _BoltActivity(app.client)
+
+    _log("starting Slack Socket Mode listener")
+    _best_effort_sync_activity(lambda: app.client.users_setPresence(presence="auto"), logger=_log)
 
     @app.event("app_mention")
     def handle_app_mention(event, say):  # type: ignore[no-untyped-def]
@@ -238,13 +359,80 @@ def run_socket_mode(config: SlackConfig) -> None:
                 channel=channel,
                 user=user,
                 thread_ts=thread_ts,
+                event_type="app_mention",
+                event_ts=event.get("ts"),
+                typing_thread_ts=thread_ts,
                 poster=_FunctionPoster(post),
+                activity=activity,
                 runner=lambda prompt: run_turn(prompt, model=runtime_config.claude_model),
                 memory=memory or None,
+                logger=_log,
+            )
+        )
+
+    @app.event("message")
+    def handle_message(event, say):  # type: ignore[no-untyped-def]
+        if not should_reply_to_message_event(event):
+            return
+        channel = event["channel"]
+        user = event.get("user")
+        text = event.get("text", "")
+        thread_ts = reply_thread_ts_for_message_event(event)
+        typing_thread_ts = event.get("thread_ts") or event.get("ts")
+
+        async def post(text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            say(text=text, channel=channel, thread_ts=thread_ts)
+
+        asyncio.run(
+            handle_slack_text(
+                text,
+                channel=channel,
+                user=user,
+                thread_ts=thread_ts,
+                event_type=message_event_name(event),
+                event_ts=event.get("ts"),
+                typing_thread_ts=typing_thread_ts,
+                poster=_FunctionPoster(post),
+                activity=activity,
+                runner=lambda prompt: run_turn(prompt, model=runtime_config.claude_model),
+                memory=memory or None,
+                logger=_log,
             )
         )
 
     SocketModeHandler(app, config.app_token).start()
+
+
+def should_reply_to_message_event(event: dict[str, Any]) -> bool:
+    """Reply to every human DM and every human-authored thread message."""
+    if event.get("bot_id") or event.get("bot_profile"):
+        return False
+    if not event.get("user"):
+        return False
+    subtype = event.get("subtype")
+    if subtype not in (None, "file_share"):
+        return False
+    if event.get("channel_type") in ("im", "mpim"):
+        return True
+    return bool(event.get("thread_ts"))
+
+
+def reply_thread_ts_for_message_event(event: dict[str, Any]) -> str | None:
+    thread_ts = event.get("thread_ts")
+    if thread_ts:
+        return str(thread_ts)
+    return None
+
+
+def message_event_name(event: dict[str, Any]) -> str:
+    channel_type = event.get("channel_type")
+    if channel_type == "im":
+        return "message.im"
+    if channel_type == "mpim":
+        return "message.mpim"
+    if channel_type == "group":
+        return "message.groups"
+    return "message.channels"
 
 
 def _create_single_workspace_bolt_app(
@@ -286,6 +474,83 @@ class _FunctionPoster:
         result = self._post(text, channel=channel, thread_ts=thread_ts)
         if inspect.isawaitable(result):
             await result
+
+
+class _BoltActivity:
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def mark_online(self) -> None:
+        await asyncio.to_thread(self._client.users_setPresence, presence="auto")
+
+    async def start_typing(self, *, channel: str, thread_ts: str) -> None:
+        await asyncio.to_thread(
+            self._client.api_call,
+            "assistant.threads.setStatus",
+            json={
+                "channel_id": channel,
+                "thread_ts": thread_ts,
+                "status": "is typing...",
+                "loading_messages": ["is typing..."],
+            },
+        )
+
+    async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
+        await asyncio.to_thread(
+            self._client.api_call,
+            "assistant.threads.setStatus",
+            json={"channel_id": channel, "thread_ts": thread_ts, "status": ""},
+        )
+
+
+async def _best_effort_activity(awaitable: Awaitable[Any], *, logger: Logger | None = None) -> None:
+    try:
+        result = await awaitable
+    except Exception as exc:
+        if logger is not None:
+            logger(f"[slack] activity warning: {_one_line(str(exc), limit=240)}")
+        return
+    if isinstance(result, dict) and not result.get("ok", True) and logger is not None:
+        logger(f"[slack] activity warning: {result.get('error', 'unknown_error')}")
+
+
+def _supports_activity(value: Any) -> bool:
+    return all(hasattr(value, name) for name in ("mark_online", "start_typing", "stop_typing"))
+
+
+def _best_effort_sync_activity(callback: Callable[[], Any], *, logger: Logger | None = None) -> None:
+    try:
+        result = callback()
+    except Exception as exc:
+        if logger is not None:
+            logger(f"[slack] activity warning: {_one_line(str(exc), limit=240)}")
+        return
+    if isinstance(result, dict) and not result.get("ok", True) and logger is not None:
+        logger(f"[slack] activity warning: {result.get('error', 'unknown_error')}")
+
+
+def _format_received_log(
+    event_type: str,
+    *,
+    channel: str,
+    user: str | None,
+    thread_ts: str | None,
+    event_ts: str | None,
+    text: str,
+) -> str:
+    details = [f"type={event_type}", f"channel={channel}"]
+    if user:
+        details.append(f"user={user}")
+    if thread_ts:
+        details.append(f"thread_ts={thread_ts}")
+    if event_ts:
+        details.append(f"event_ts={event_ts}")
+    details.append(f"text={_one_line(text, limit=220)!r}")
+    return "[slack] received " + " ".join(details)
+
+
+def _log(message: str) -> None:
+    print(message, flush=True)
 
 
 def _one_line(text: str, limit: int = 160) -> str:

@@ -4,6 +4,7 @@ import asyncio
 import os
 
 from intern_bot.agent import TurnResult
+from intern_bot.slack.prompts import ORCHESTRATOR_PROMPT
 from intern_bot.slack.app import (
     PrintPoster,
     SlackConfig,
@@ -11,6 +12,9 @@ from intern_bot.slack.app import (
     _create_single_workspace_bolt_app,
     format_slack_prompt,
     handle_slack_text,
+    message_event_name,
+    reply_thread_ts_for_message_event,
+    should_reply_to_message_event,
     verify_slack_signature,
 )
 
@@ -27,6 +31,7 @@ def test_slack_config_reports_missing_runtime_tokens():
 
     assert "SLACK_SIGNING_SECRET: set" in rendered
     assert "SLACK_BOT_TOKEN: missing" in rendered
+    assert "Always Show My Bot as Online" in rendered
     assert config.missing_for_events_api() == ["SLACK_BOT_TOKEN"]
     assert config.missing_for_socket_mode() == ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]
 
@@ -37,7 +42,28 @@ def test_format_slack_prompt_includes_context():
     assert "Slack channel: C123" in prompt
     assert "Slack user: U123" in prompt
     assert "Slack thread_ts: 123.456" in prompt
+    assert "Answer the latest user message directly." in prompt
+    assert "real intern in Slack" in prompt
+    assert "pick a concrete answer" in prompt
+    assert "1-2 short sentences" in prompt
+    assert "long capability list" in prompt
     assert prompt.endswith("hello intern")
+
+
+def test_orchestrator_prompt_discourages_generic_flattery_for_casual_questions():
+    assert "concrete answer" in ORCHESTRATOR_PROMPT
+    assert "generic flattery" in ORCHESTRATOR_PROMPT
+
+
+def test_orchestrator_prompt_uses_intern_coded_slack_voice():
+    assert "intern-coded" in ORCHESTRATOR_PROMPT
+    assert "actual intern in Slack" in ORCHESTRATOR_PROMPT
+    assert "assistant-y phrases" in ORCHESTRATOR_PROMPT
+    assert "1-2 short sentences" in ORCHESTRATOR_PROMPT
+    assert "Do not dump a long feature list" in ORCHESTRATOR_PROMPT
+    assert "Corny jokes" not in ORCHESTRATOR_PROMPT
+    assert "well-timed GIF" not in ORCHESTRATOR_PROMPT
+    assert "goofball" not in ORCHESTRATOR_PROMPT
 
 
 def test_verify_slack_signature_accepts_valid_signature():
@@ -92,6 +118,148 @@ def test_handle_slack_text_posts_runner_errors(capsys):
     captured = capsys.readouterr()
     assert "Intern runtime error: Claude Code is not logged in" in captured.out
     assert "Claude Code is not logged in" in result.text
+
+
+def test_handle_slack_text_marks_activity_and_logs_received_message(capsys):
+    class RecordingActivity:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def mark_online(self) -> None:
+            self.calls.append(("online",))
+
+        async def start_typing(self, *, channel: str, thread_ts: str) -> None:
+            self.calls.append(("typing", channel, thread_ts))
+
+        async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
+            self.calls.append(("clear", channel, thread_ts))
+
+    async def runner(prompt: str) -> TurnResult:
+        return TurnResult(text="reply")
+
+    activity = RecordingActivity()
+
+    asyncio.run(
+        handle_slack_text(
+            "hi",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            event_type="message.im",
+            event_ts="333.444",
+            poster=PrintPoster(),
+            activity=activity,
+            runner=runner,
+            logger=print,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert (
+        "[slack] received type=message.im channel=C123 user=U123 "
+        "thread_ts=111.222 event_ts=333.444 text='hi'"
+    ) in captured.out
+    assert activity.calls == [
+        ("online",),
+        ("typing", "C123", "111.222"),
+        ("clear", "C123", "111.222"),
+    ]
+
+
+def test_handle_slack_text_always_posts_fallback_for_empty_result(capsys):
+    async def runner(prompt: str) -> TurnResult:
+        return TurnResult(text="")
+
+    result = asyncio.run(
+        handle_slack_text(
+            "hi",
+            channel="C123",
+            user="U123",
+            poster=PrintPoster(),
+            runner=runner,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert "Intern runtime did not return a reply" in captured.out
+    assert "Intern runtime did not return a reply" in result.text
+
+
+def test_should_reply_to_message_event_for_dms_and_threads_only():
+    assert should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "D123",
+            "channel_type": "im",
+            "user": "U123",
+            "ts": "1.0",
+        }
+    )
+    assert should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "G123",
+            "channel_type": "mpim",
+            "user": "U123",
+            "ts": "1.0",
+        }
+    )
+    assert should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "C123",
+            "channel_type": "channel",
+            "user": "U123",
+            "thread_ts": "1.0",
+            "ts": "2.0",
+        }
+    )
+    assert not should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "C123",
+            "channel_type": "channel",
+            "user": "U123",
+            "ts": "1.0",
+        }
+    )
+    assert not should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "D123",
+            "channel_type": "im",
+            "user": "U123",
+            "bot_id": "B123",
+            "ts": "1.0",
+        }
+    )
+    assert not should_reply_to_message_event(
+        {
+            "type": "message",
+            "channel": "D123",
+            "channel_type": "im",
+            "user": "U123",
+            "subtype": "message_changed",
+            "ts": "1.0",
+        }
+    )
+
+
+def test_message_event_helpers_return_reply_target_and_event_name():
+    event = {
+        "type": "message",
+        "channel": "C123",
+        "channel_type": "group",
+        "user": "U123",
+        "thread_ts": "1.0",
+        "ts": "2.0",
+    }
+
+    assert reply_thread_ts_for_message_event(event) == "1.0"
+    assert message_event_name(event) == "message.groups"
+    assert message_event_name({"channel_type": "im"}) == "message.im"
+    assert message_event_name({"channel_type": "mpim"}) == "message.mpim"
+    assert message_event_name({"channel_type": "channel"}) == "message.channels"
 
 
 def test_bolt_app_uses_bot_token_when_oauth_env_is_present(monkeypatch):

@@ -23,7 +23,7 @@ def _float_env(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class InternConfig:
-    claude_model: str | None = "haiku"
+    claude_model: str | None = "sonnet"
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
     max_concurrent_tasks: int = 1

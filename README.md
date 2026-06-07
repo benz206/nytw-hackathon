@@ -81,12 +81,12 @@ export INTERN_RANDOM_BANTER_CHANCE=0.10
 export INTERN_MAX_CONCURRENT_TASKS=1
 export INTERN_MAX_SELF_STARTED_PRS_PER_DAY=3
 export INTERN_DAILY_SPEND_CAP_USD=5.00
-export INTERN_CLAUDE_MODEL=haiku
+export INTERN_CLAUDE_MODEL=sonnet
 ```
 
 `INTERN_CLAUDE_MODEL` is passed through to Claude Code's `--model` option. This
-repo defaults to `haiku`; set it to another Claude Code model alias or full
-model ID when you want a stronger/slower model for implementation work.
+repo defaults to `sonnet`; set it to another Claude Code model alias or full
+model ID if you want a different speed/capability tradeoff.
 
 Optional quiet hours use local 24-hour clock values:
 
@@ -300,6 +300,26 @@ SLACK_DEFAULT_CHANNEL=C...
 For the easiest local loop, enable Socket Mode in the Slack app and add
 `SLACK_APP_TOKEN`.
 
+Slack bot token scopes/events used by the Socket Mode listener:
+
+- `chat:write` to post replies and set assistant thread status/typing indicators
+- `app_mentions:read` for `app_mention` events
+- `im:history` for direct-message `message.im` events
+- `mpim:history` for multi-person direct-message `message.mpim` events, if used
+- `channels:history` for public-channel thread `message.channels` events
+- `groups:history` for private-channel thread `message.groups` events
+- `users:write` to call `users.setPresence` as a best-effort presence nudge
+- `assistant:write` only if your workspace still requires it for
+  `assistant.threads.setStatus`; Slack is moving that method to `chat:write`
+
+The app-level Socket Mode token needs `connections:write`.
+
+For the visible green online dot, open the Slack app settings and enable
+**Bot User > Always Show My Bot as Online**. The listener calls
+`users.setPresence` on startup and before replies, but Slack's Events API /
+Socket Mode bot presence is ultimately controlled by that Bot User setting;
+`users.setPresence` cannot force a bot to active.
+
 Check what is ready without printing secrets:
 
 ```bash
@@ -318,6 +338,11 @@ Run the local Socket Mode listener:
 ```bash
 intern run
 ```
+
+While the listener is running, the terminal logs each received Slack message
+before the Intern starts working on it. The Intern replies to direct messages,
+thread replies, and app mentions; plain channel messages without a thread are
+ignored unless they are app mentions.
 
 Your Slack event handler should:
 
