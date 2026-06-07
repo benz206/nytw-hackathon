@@ -1,0 +1,22 @@
+[project]
+name = "nytw-intern"
+version = "0.1.0"
+description = "Always-on Slack intern agent built on the Claude Agent SDK."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+intern = "intern_bot.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
