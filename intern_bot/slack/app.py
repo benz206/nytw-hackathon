@@ -442,9 +442,11 @@ async def handle_slack_text(
         logger=logger,
     )
 
-    reply = result.text.strip()
+    reply = _slack_reply_text(result.text)
     if ensure_reply and not reply:
         reply = "I got your message, but the Intern runtime did not return a reply."
+        result.text = reply
+    elif reply:
         result.text = reply
     if reply:
         try:
@@ -581,6 +583,22 @@ def _task_progress_text(description: str) -> str | None:
         return "PR stuff now. making it presentable before adults see it"
 
     return f"still digging: {description}"
+
+
+def _slack_reply_text(text: str) -> str:
+    """Strip GitHub-flavored Markdown that Slack renders poorly or literally."""
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+
+    cleaned = re.sub(r"```[a-zA-Z0-9_-]*\n?([\s\S]*?)```", lambda match: match.group(1).strip(), cleaned)
+    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\*\*([^*\n][^*]*?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_\n][^_]*?)__", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`\n]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"^\s*[-*]\s+", "- ", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 async def _post_perseus_usage_log(
@@ -789,6 +807,10 @@ def format_slack_prompt(
     parts.append("- Sound like a barely-trained intern in Slack: short, eager, specific, no assistant-y filler.")
     parts.append("- One Slack bubble by default; do not write a mini project brief.")
     parts.append("- No markdown headings, bold section labels, numbered plans, or multi-question questionnaires unless asked.")
+    parts.append(
+        "- Use plain Slack text, not GitHub Markdown: no **bold**, no inline code formatting, "
+        "no fenced code blocks, no tables, no nested bullets."
+    )
     parts.append("- For pure banter, it is okay to be dumb-funny before being useful.")
     parts.append(
         "- For casual preference/opinion questions, pick a concrete answer with a short reason; "

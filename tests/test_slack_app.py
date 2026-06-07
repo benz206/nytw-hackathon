@@ -14,6 +14,7 @@ from intern_bot.slack.app import (
     _BoltThreadHistory,
     _create_single_workspace_bolt_app,
     _slack_progress_text,
+    _slack_reply_text,
     casual_intern_reply,
     format_slack_prompt,
     handle_slack_text,
@@ -65,6 +66,8 @@ def test_format_slack_prompt_includes_context():
     assert "barely-trained intern in Slack" in prompt
     assert "One Slack bubble" in prompt
     assert "No markdown headings" in prompt
+    assert "GitHub Markdown" in prompt
+    assert "no inline code formatting" in prompt
     assert "dumb-funny" in prompt
     assert "pick a concrete answer" in prompt
     assert "joking shrug" in prompt
@@ -90,6 +93,8 @@ def test_orchestrator_prompt_uses_intern_coded_slack_voice():
     assert "assistant-y phrases" in ORCHESTRATOR_PROMPT
     assert "not a project brief" in ORCHESTRATOR_PROMPT
     assert "No markdown headings" in ORCHESTRATOR_PROMPT
+    assert "GitHub Markdown" in ORCHESTRATOR_PROMPT
+    assert "inline backticks" in ORCHESTRATOR_PROMPT
     assert '"hi" -> "hi" plus one cat photo/link' in ORCHESTRATOR_PROMPT
     assert "joke about coffee" in ORCHESTRATOR_PROMPT
     assert "uhhh mb guys" in ORCHESTRATOR_PROMPT
@@ -253,6 +258,26 @@ def test_handle_slack_text_acks_codebase_roast_request_in_intern_voice():
         ("starting the codebase roast. keeping it HR-safe, barely", "C123", "111.222"),
         ("found three crimes and one misdemeanor", "C123", "111.222"),
     ]
+
+
+def test_slack_reply_text_strips_markdown_that_slack_shows_literally():
+    markdown = (
+        "ok so here is the repo roast:\n\n"
+        "**biggest crimes:**\n"
+        "- `DELETE /tasks/{id}` returns 500\n"
+        "- **VALID_STATUSES** exists but does nothing\n\n"
+        "```text\n"
+        "frontend/dist is committed\n"
+        "```"
+    )
+
+    assert _slack_reply_text(markdown) == (
+        "ok so here is the repo roast:\n\n"
+        "biggest crimes:\n"
+        "- DELETE /tasks/{id} returns 500\n"
+        "- VALID_STATUSES exists but does nothing\n\n"
+        "frontend/dist is committed"
+    )
 
 
 def test_slack_progress_text_turns_raw_sdk_updates_into_intern_voice():
