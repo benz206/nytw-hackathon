@@ -69,6 +69,7 @@ async def heartbeat_once(
             permission_mode=config.permission_mode,
             git_author_name=config.git_author_name,
             git_author_email=config.git_author_email,
+            memory_path=config.memory_path,
         )
     )
     result = await runner(prompt)

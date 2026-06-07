@@ -3,6 +3,33 @@ from datetime import date, datetime
 from intern_bot.memory import InternMemory
 
 
+def test_memory_scaffolds_remembered_notes_and_activity_log(tmp_path):
+    memory = InternMemory(tmp_path / "memory.md")
+
+    memory.ensure_exists()
+
+    content = (tmp_path / "memory.md").read_text(encoding="utf-8")
+    assert "## Remembered Notes" in content
+    assert "## Activity Log" in content
+    assert memory.remembered_notes() == ""
+
+
+def test_memory_reads_only_remembered_notes_section(tmp_path):
+    memory_path = tmp_path / "memory.md"
+    memory_path.write_text(
+        "# Intern Memory\n\n"
+        "## Remembered Notes\n\n"
+        "- Prefer short Slack replies.\n\n"
+        "## Activity Log\n\n"
+        "- 2026-06-07T09:00:00 slack_turn: hello [cost_usd=1.000000]\n",
+        encoding="utf-8",
+    )
+
+    memory = InternMemory(memory_path)
+
+    assert memory.remembered_notes() == "- Prefer short Slack replies."
+
+
 def test_memory_tracks_daily_usage(tmp_path):
     memory = InternMemory(tmp_path / "memory.md")
     memory.append_event(
@@ -26,4 +53,3 @@ def test_memory_tracks_daily_usage(tmp_path):
     assert usage.self_started_prs == 1
     assert usage.active_tasks == 0
     assert usage.spend_usd == 1.0
-

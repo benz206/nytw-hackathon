@@ -1,4 +1,4 @@
-"""Markdown audit log and daily cap accounting."""
+"""Markdown memory, audit log, and daily cap accounting."""
 
 from __future__ import annotations
 
@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
+
+REMEMBERED_NOTES_HEADING = "## Remembered Notes"
+ACTIVITY_LOG_HEADING = "## Activity Log"
 
 
 @dataclass(frozen=True)
@@ -26,7 +29,26 @@ class InternMemory:
         if self.path.exists():
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text("# Intern Memory\n\n", encoding="utf-8")
+        self.path.write_text(
+            "# Intern Memory\n\n"
+            f"{REMEMBERED_NOTES_HEADING}\n\n"
+            "- Nothing yet.\n\n"
+            f"{ACTIVITY_LOG_HEADING}\n\n",
+            encoding="utf-8",
+        )
+
+    def remembered_notes(self, *, max_chars: int = 4000) -> str:
+        """Return durable notes intended for agent context, excluding audit logs."""
+        if not self.path.exists():
+            return ""
+
+        content = self.path.read_text(encoding="utf-8")
+        section = _markdown_section(content, REMEMBERED_NOTES_HEADING).strip()
+        if not section or section == "- Nothing yet.":
+            return ""
+        if len(section) <= max_chars:
+            return section
+        return section[-max_chars:].lstrip()
 
     def append_event(
         self,
@@ -55,6 +77,7 @@ class InternMemory:
             markers.append(f"pr_url={pr_url}")
 
         suffix = f" [{' '.join(markers)}]" if markers else ""
+        self._ensure_activity_log_heading()
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(f"- {timestamp} {event_type}: {summary}{suffix}\n")
 
@@ -83,6 +106,15 @@ class InternMemory:
     def _event_lines(self) -> Iterable[str]:
         return self.path.read_text(encoding="utf-8").splitlines()
 
+    def _ensure_activity_log_heading(self) -> None:
+        content = self.path.read_text(encoding="utf-8")
+        if ACTIVITY_LOG_HEADING in content:
+            return
+        with self.path.open("a", encoding="utf-8") as handle:
+            if content and not content.endswith("\n"):
+                handle.write("\n")
+            handle.write(f"\n{ACTIVITY_LOG_HEADING}\n")
+
 
 def _extract_cost(line: str) -> float:
     marker = "cost_usd="
@@ -94,3 +126,17 @@ def _extract_cost(line: str) -> float:
     except ValueError:
         return 0.0
 
+
+def _markdown_section(content: str, heading: str) -> str:
+    lines = content.splitlines()
+    try:
+        start = lines.index(heading) + 1
+    except ValueError:
+        return ""
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    return "\n".join(lines[start:end]).strip()

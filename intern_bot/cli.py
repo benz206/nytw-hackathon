@@ -54,6 +54,7 @@ async def _run(args: argparse.Namespace) -> None:
             permission_mode=config.permission_mode,
             git_author_name=config.git_author_name,
             git_author_email=config.git_author_email,
+            memory_path=config.memory_path,
             logger=print,
         )
         if result.text.strip():
@@ -203,6 +204,7 @@ async def _run(args: argparse.Namespace) -> None:
                     permission_mode=runtime_config.permission_mode,
                     git_author_name=runtime_config.git_author_name,
                     git_author_email=runtime_config.git_author_email,
+                    memory_path=runtime_config.memory_path,
                     logger=print,
                 )
             from .agent import TurnResult

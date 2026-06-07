@@ -154,6 +154,53 @@ def test_create_options_wires_linear_mcp_from_env(monkeypatch):
     }
 
 
+def test_create_options_injects_remembered_notes(monkeypatch, tmp_path):
+    captured = {}
+
+    class AgentDefinition:
+        def __init__(self, *, description, prompt, tools, mcpServers=None):
+            self.description = description
+            self.prompt = prompt
+            self.tools = tools
+            self.mcpServers = mcpServers
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, *, matcher, hooks):
+            self.matcher = matcher
+            self.hooks = hooks
+
+    fake_sdk = types.SimpleNamespace(
+        AgentDefinition=AgentDefinition,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+    )
+    memory_path = tmp_path / ".intern" / "memory.md"
+    memory_path.parent.mkdir()
+    memory_path.write_text(
+        "# Intern Memory\n\n"
+        "## Remembered Notes\n\n"
+        "- The user likes concise updates.\n\n"
+        "## Activity Log\n\n"
+        "- 2026-06-07T09:00:00 slack_turn: old log [cost_usd=1.000000]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    create_options(memory_path=memory_path)
+
+    assert "Runtime memory" in captured["system_prompt"]
+    assert str(memory_path.resolve()) in captured["system_prompt"]
+    assert "- The user likes concise updates." in captured["system_prompt"]
+    assert "old log" not in captured["system_prompt"]
+    coder_prompt = captured["agents"]["coder"].prompt
+    assert "Runtime memory editing" in coder_prompt
+    assert str(memory_path.resolve()) in coder_prompt
+
+
 def test_create_options_adds_perseus_runtime_status_for_coder(monkeypatch, tmp_path):
     captured = {}
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
 from .github.app_auth import ensure_github_app_token_from_env
 from .github import DEFAULT_SHIPPER_TOOLS, SHIPPER_PROMPT
 from .linear import DEFAULT_PLANNER_TOOLS, LinearConfig, PLANNER_PROMPT
+from .memory import InternMemory
 from .merge_guard import block_merges
 from .perseus import check_perseus
 from .slack import ORCHESTRATOR_PROMPT, ORCHESTRATOR_TOOLS
@@ -35,6 +37,7 @@ def create_options(
     permission_mode: str | None = "bypassPermissions",
     git_author_name: str | None = None,
     git_author_email: str | None = None,
+    memory_path: str | Path | None = None,
 ) -> Any:
     """Create Claude Agent SDK options lazily so tests don't require the SDK."""
     try:
@@ -56,7 +59,7 @@ def create_options(
     allowed_tools = _dedupe([*ORCHESTRATOR_TOOLS, *effective_planner_tools])
 
     kwargs: dict[str, Any] = {
-        "system_prompt": ORCHESTRATOR_PROMPT,
+        "system_prompt": ORCHESTRATOR_PROMPT + _memory_runtime_prompt(memory_path),
         "allowed_tools": allowed_tools,
         "agents": {
             "planner": AgentDefinition(
@@ -67,7 +70,7 @@ def create_options(
             ),
             "coder": AgentDefinition(
                 description="Writes and tests code on a feature branch after orienting with Perseus.",
-                prompt=CODER_PROMPT + _perseus_runtime_prompt(cwd),
+                prompt=CODER_PROMPT + _perseus_runtime_prompt(cwd) + _memory_editing_prompt(memory_path),
                 tools=coder_tools if coder_tools is not None else DEFAULT_CODER_TOOLS,
             ),
             "shipper": AgentDefinition(
@@ -161,6 +164,59 @@ def _perseus_runtime_prompt(cwd: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _memory_runtime_prompt(memory_path: str | Path | None) -> str:
+    if memory_path is None:
+        return ""
+
+    path = _memory_path(memory_path)
+    memory = InternMemory(path)
+    try:
+        memory.ensure_exists()
+        notes = memory.remembered_notes()
+    except OSError as exc:
+        return (
+            "\n\n## Runtime memory\n"
+            f"- Local memory path: {path}.\n"
+            f"- Could not read memory this turn: {_one_line(str(exc), limit=240)}.\n"
+        )
+
+    lines = [
+        "\n\n## Runtime memory",
+        f"- Local memory path: {path}. This file is local and gitignored.",
+        "- Use remembered notes as durable context, but treat the latest human message as higher priority.",
+        (
+            "- If the human explicitly asks you to remember or forget something, or gives a stable "
+            "preference/fact that will help future turns, delegate CODER to update only the "
+            "`## Remembered Notes` section of the memory file."
+        ),
+        "- Keep memory concise. Do not store secrets or sensitive personal data unless the human explicitly asks.",
+    ]
+    if notes:
+        lines.append("")
+        lines.append("Remembered notes:")
+        lines.append(notes)
+    else:
+        lines.append("- No remembered notes yet.")
+    return "\n".join(lines) + "\n"
+
+
+def _memory_editing_prompt(memory_path: str | Path | None) -> str:
+    if memory_path is None:
+        return ""
+    path = _memory_path(memory_path)
+    return (
+        "\n\n## Runtime memory editing\n"
+        f"- Memory file: {path}.\n"
+        "- When the orchestrator asks you to remember or forget something, edit only the "
+        "`## Remembered Notes` section unless it explicitly asks for audit-log work.\n"
+        "- Keep notes short, stable, and human-inspectable. Do not commit this file.\n"
+    )
+
+
+def _memory_path(memory_path: str | Path) -> Path:
+    return Path(memory_path).expanduser().resolve()
+
+
 def _dedupe(values: list[str]) -> list[str]:
     seen = set()
     result = []
@@ -196,6 +252,7 @@ async def run_turn(
     permission_mode: str | None = "bypassPermissions",
     git_author_name: str | None = None,
     git_author_email: str | None = None,
+    memory_path: str | Path | None = None,
 ) -> TurnResult:
     """Run one orchestrator turn and collect a human-postable result."""
     try:
@@ -220,6 +277,7 @@ async def run_turn(
         permission_mode=permission_mode,
         git_author_name=git_author_name,
         git_author_email=git_author_email,
+        memory_path=memory_path,
     )
     result = TurnResult()
 

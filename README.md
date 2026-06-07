@@ -323,6 +323,17 @@ The local CLI prints messages to stdout. A production Slack app should call
 `intern_bot.heartbeat.heartbeat_loop()` for scheduled ticks, passing its own
 Slack `post_message` function.
 
+## Local Memory
+
+The Intern keeps a local, gitignored Markdown memory at `.intern/memory.md` by
+default. The `## Remembered Notes` section is injected into the agent prompt on
+manual, Slack, and heartbeat turns. The `## Activity Log` section records
+turn/cost/cap markers and is not treated as durable preference memory.
+
+To teach the Intern something durable, ask it to remember it or edit the
+`## Remembered Notes` section directly. Keep notes short and avoid storing
+secrets.
+
 ## Slack Integration Sketch
 
 For local Slack testing, put Slack credentials in `.env.local`:
@@ -442,8 +453,9 @@ and daily spend caps before asking the orchestrator to do anything.
 - `INTERN_PAUSED=1` stops heartbeat work immediately.
 - Randomness only affects harmless heartbeat banter, never code changes or
   ticket edits.
-- `InternMemory` records heartbeat/manual activity, PR markers, task markers,
-  and cost markers in Markdown.
+- `InternMemory` stores gitignored remembered notes and records
+  heartbeat/manual activity, PR markers, task markers, and cost markers in
+  Markdown.
 
 ## Project Layout
 
