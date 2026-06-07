@@ -104,3 +104,26 @@ def test_format_failed_index_points_to_reindex(tmp_path):
 
     assert "index: failed (1)" in rendered
     assert "perseus index" in rendered
+
+
+def test_check_perseus_skips_missing_doctor_command(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, cwd, text, capture_output, timeout, check):
+        calls.append(tuple(command))
+        if tuple(command) == ("/bin/perseus", "doctor"):
+            return SimpleNamespace(returncode=2, stdout="", stderr="No such command 'doctor'.")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setenv("PERSEUS_TOKEN_PATH", str(tmp_path / "token"))
+    monkeypatch.setattr(perseus.subprocess, "run", fake_run)
+
+    report = check_perseus(cwd=tmp_path, executable="/bin/perseus", timeout_seconds=7)
+
+    assert report.ok
+    assert report.doctor is None
+    assert calls == [
+        ("/bin/perseus", "--version"),
+        ("/bin/perseus", "doctor"),
+        ("/bin/perseus", "index", "--status"),
+    ]

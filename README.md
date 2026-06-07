@@ -82,17 +82,43 @@ export INTERN_MAX_CONCURRENT_TASKS=1
 export INTERN_MAX_SELF_STARTED_PRS_PER_DAY=3
 export INTERN_DAILY_SPEND_CAP_USD=5.00
 export INTERN_CLAUDE_MODEL=sonnet
+export INTERN_TARGET_REPO=/Users/benz/Documents/task-manager
 ```
 
 `INTERN_CLAUDE_MODEL` is passed through to Claude Code's `--model` option. This
 repo defaults to `sonnet`; set it to another Claude Code model alias or full
 model ID if you want a different speed/capability tradeoff.
+`INTERN_TARGET_REPO` is the code repository the Intern should edit. Keep this
+set to the product repo, not this Intern runtime repo.
 
 Optional quiet hours use local 24-hour clock values:
 
 ```bash
 export INTERN_QUIET_HOURS_START=18
 export INTERN_QUIET_HOURS_END=8
+```
+
+Linear autonomy policy:
+
+```bash
+export LINEAR_MCP_SERVER_NAME=linear
+export LINEAR_MCP_URL=https://mcp.linear.app/mcp
+export INTERN_LINEAR_TEAM_KEYS=ENG
+export INTERN_LINEAR_ALLOWED_STATUSES=Todo,Backlog,Triage
+export INTERN_LINEAR_IN_PROGRESS_STATUS="In Progress"
+export INTERN_LINEAR_BLOCKED_STATUS=Blocked
+export INTERN_LINEAR_DONE_STATUS=Done
+export INTERN_LINEAR_MAX_ESTIMATE=2
+export INTERN_LINEAR_CANDIDATE_LIMIT=20
+export INTERN_LINEAR_RANDOM_TOP_N=3
+export INTERN_LINEAR_COMMENT_ON_START=1
+export INTERN_LINEAR_COMMENT_ON_PR=1
+```
+
+Check the local Linear launcher prerequisites and policy config:
+
+```bash
+intern linear check --require-config
 ```
 
 Kill switch:
@@ -132,6 +158,8 @@ perseus index --status
 Perseus stores its auth token under `~/.config/perseus/`. Keep login as a
 human/operator action; the Intern can check status and query indexes, but should
 not initiate OAuth in an agent session.
+Some Perseus CLI versions do not expose `perseus doctor`; in that case
+`perseus index --status` is the important readiness check.
 
 This repo includes an operator preflight:
 

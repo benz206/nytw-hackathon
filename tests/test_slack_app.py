@@ -6,10 +6,12 @@ import os
 from intern_bot.agent import TurnResult
 from intern_bot.slack.prompts import ORCHESTRATOR_PROMPT
 from intern_bot.slack.app import (
+    CAT_PHOTO_URL,
     PrintPoster,
     SlackConfig,
     SlackEnvCheck,
     _create_single_workspace_bolt_app,
+    casual_intern_reply,
     format_slack_prompt,
     handle_slack_text,
     message_event_name,
@@ -43,8 +45,13 @@ def test_format_slack_prompt_includes_context():
     assert "Slack user: U123" in prompt
     assert "Slack thread_ts: 123.456" in prompt
     assert "Answer the latest user message directly." in prompt
-    assert "real intern in Slack" in prompt
+    assert "barely-trained intern in Slack" in prompt
+    assert "One Slack bubble" in prompt
+    assert "No markdown headings" in prompt
+    assert "dumb-funny" in prompt
     assert "pick a concrete answer" in prompt
+    assert "joking shrug" in prompt
+    assert "one short paragraph with at most one tiny question" in prompt
     assert "1-2 short sentences" in prompt
     assert "long capability list" in prompt
     assert prompt.endswith("hello intern")
@@ -59,11 +66,27 @@ def test_orchestrator_prompt_uses_intern_coded_slack_voice():
     assert "intern-coded" in ORCHESTRATOR_PROMPT
     assert "actual intern in Slack" in ORCHESTRATOR_PROMPT
     assert "assistant-y phrases" in ORCHESTRATOR_PROMPT
+    assert "not a project brief" in ORCHESTRATOR_PROMPT
+    assert "No markdown headings" in ORCHESTRATOR_PROMPT
+    assert '"hi" -> "hi" plus one cat photo/link' in ORCHESTRATOR_PROMPT
+    assert "joke about coffee" in ORCHESTRATOR_PROMPT
+    assert "uhhh mb guys" in ORCHESTRATOR_PROMPT
+    assert "Ask at most one tiny question" in ORCHESTRATOR_PROMPT
+    assert "no three-question questionnaire" in ORCHESTRATOR_PROMPT
     assert "1-2 short sentences" in ORCHESTRATOR_PROMPT
     assert "Do not dump a long feature list" in ORCHESTRATOR_PROMPT
     assert "Corny jokes" not in ORCHESTRATOR_PROMPT
     assert "well-timed GIF" not in ORCHESTRATOR_PROMPT
     assert "goofball" not in ORCHESTRATOR_PROMPT
+
+
+def test_casual_intern_reply_handles_obvious_banter():
+    assert casual_intern_reply("<@U123> hi") == f"hi\n{CAT_PHOTO_URL}"
+    assert "make u some coffee" in casual_intern_reply("what can you actually do for our company")
+    assert casual_intern_reply("why is prod down") == (
+        "uhhh mb guys\nI can look, but I am not touching prod without on-call"
+    )
+    assert casual_intern_reply("what should we do about the deploy") is None
 
 
 def test_verify_slack_signature_accepts_valid_signature():
@@ -89,7 +112,7 @@ def test_handle_slack_text_runs_runner_and_posts(capsys):
 
     asyncio.run(
         handle_slack_text(
-            "hi",
+            "please check the repo status",
             channel="C123",
             user="U123",
             poster=PrintPoster(),
@@ -101,13 +124,32 @@ def test_handle_slack_text_runs_runner_and_posts(capsys):
     assert "hello from intern" in captured.out
 
 
+def test_handle_slack_text_posts_fast_banter_without_runner(capsys):
+    async def runner(prompt: str) -> TurnResult:
+        raise AssertionError("casual banter should not call the model runner")
+
+    result = asyncio.run(
+        handle_slack_text(
+            "<@U123> hi",
+            channel="C123",
+            user="U123",
+            poster=PrintPoster(),
+            runner=runner,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert result.text == f"hi\n{CAT_PHOTO_URL}"
+    assert CAT_PHOTO_URL in captured.out
+
+
 def test_handle_slack_text_posts_runner_errors(capsys):
     async def runner(prompt: str) -> TurnResult:
         raise RuntimeError("Claude Code is not logged in")
 
     result = asyncio.run(
         handle_slack_text(
-            "hi",
+            "please hit the runtime error path",
             channel="C123",
             user="U123",
             poster=PrintPoster(),
@@ -141,7 +183,7 @@ def test_handle_slack_text_marks_activity_and_logs_received_message(capsys):
 
     asyncio.run(
         handle_slack_text(
-            "hi",
+            "please send a normal reply",
             channel="C123",
             user="U123",
             thread_ts="111.222",
@@ -157,7 +199,7 @@ def test_handle_slack_text_marks_activity_and_logs_received_message(capsys):
     captured = capsys.readouterr()
     assert (
         "[slack] received type=message.im channel=C123 user=U123 "
-        "thread_ts=111.222 event_ts=333.444 text='hi'"
+        "thread_ts=111.222 event_ts=333.444 text='please send a normal reply'"
     ) in captured.out
     assert activity.calls == [
         ("online",),
@@ -172,7 +214,7 @@ def test_handle_slack_text_always_posts_fallback_for_empty_result(capsys):
 
     result = asyncio.run(
         handle_slack_text(
-            "hi",
+            "please send an empty reply",
             channel="C123",
             user="U123",
             poster=PrintPoster(),

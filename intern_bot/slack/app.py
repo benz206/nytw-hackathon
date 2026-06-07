@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import time
 from typing import Any, Awaitable, Callable, Iterator, Protocol
 from urllib import error, request
@@ -40,6 +41,8 @@ class ActivityIndicator(Protocol):
 
 
 Logger = Callable[[str], None]
+
+CAT_PHOTO_URL = "https://cataas.com/cat?type=square"
 
 
 @dataclass(frozen=True)
@@ -222,6 +225,14 @@ async def handle_slack_text(
             )
         )
 
+    casual_reply = casual_intern_reply(text)
+    if casual_reply:
+        result = TurnResult(text=casual_reply)
+        await poster.post_message(casual_reply, channel=channel, thread_ts=thread_ts)
+        if memory is not None:
+            memory.append_event("slack_banter", _one_line(text))
+        return result
+
     prompt = format_slack_prompt(text, channel=channel, user=user, thread_ts=thread_ts)
     status_thread_ts = typing_thread_ts or thread_ts
     activity = activity or poster if _supports_activity(poster) else activity
@@ -287,17 +298,46 @@ def format_slack_prompt(
     parts.append("")
     parts.append("Slack response guidance:")
     parts.append("- Answer the latest user message directly.")
-    parts.append("- Sound like a real intern in Slack: short, eager, specific, no assistant-y filler.")
+    parts.append("- Sound like a barely-trained intern in Slack: short, eager, specific, no assistant-y filler.")
+    parts.append("- One Slack bubble by default; do not write a mini project brief.")
+    parts.append("- No markdown headings, bold section labels, numbered plans, or multi-question questionnaires unless asked.")
+    parts.append("- For pure banter, it is okay to be dumb-funny before being useful.")
     parts.append(
         "- For casual preference/opinion questions, pick a concrete answer with a short reason; "
         "do not dodge with generic flattery."
     )
+    parts.append("- If asked what you can do, do a joking shrug first, then name the useful work in one line.")
+    parts.append("- If scoping a small ticket, give the read in one short paragraph with at most one tiny question.")
     parts.append("- Keep casual replies to 1-2 short sentences.")
     parts.append("- Do not dump a long capability list or repeat sections unless the user asked for detail.")
     parts.append("")
     parts.append("User message:")
     parts.append(text)
     return "\n".join(parts)
+
+
+def casual_intern_reply(text: str) -> str | None:
+    """Return deterministic low-stakes Slack banter without spending a model turn."""
+    normalized = _normalize_casual_text(text)
+    if normalized in {"hi", "hello", "hey", "yo", "sup"}:
+        return f"hi\n{CAT_PHOTO_URL}"
+
+    if re.search(r"\bwhat\b.*\b(can you|can u|do you|do u)\b.*\b(do|doing)\b", normalized):
+        return (
+            "uhhhhh idk make u some coffee?\n"
+            "also tickets, code, tests, and PRs when someone points me at the mess"
+        )
+
+    if normalized in {"why is prod down", "whys prod down", "why prod down", "prod down"}:
+        return "uhhh mb guys\nI can look, but I am not touching prod without on-call"
+
+    return None
+
+
+def _normalize_casual_text(text: str) -> str:
+    text = re.sub(r"<@[A-Z0-9]+>", " ", text)
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+    return " ".join(text.lower().split())
 
 
 def verify_slack_signature(
@@ -337,6 +377,7 @@ def run_socket_mode(config: SlackConfig) -> None:
 
     app = _create_single_workspace_bolt_app(config)
     runtime_config = InternConfig.from_env()
+    target_cwd = str(runtime_config.target_repo_path) if runtime_config.target_repo_path else None
     memory = InternMemory(runtime_config.memory_path)
     activity = _BoltActivity(app.client)
 
@@ -364,7 +405,11 @@ def run_socket_mode(config: SlackConfig) -> None:
                 typing_thread_ts=thread_ts,
                 poster=_FunctionPoster(post),
                 activity=activity,
-                runner=lambda prompt: run_turn(prompt, model=runtime_config.claude_model),
+                runner=lambda prompt: run_turn(
+                    prompt,
+                    cwd=target_cwd,
+                    model=runtime_config.claude_model,
+                ),
                 memory=memory or None,
                 logger=_log,
             )
@@ -394,7 +439,11 @@ def run_socket_mode(config: SlackConfig) -> None:
                 typing_thread_ts=typing_thread_ts,
                 poster=_FunctionPoster(post),
                 activity=activity,
-                runner=lambda prompt: run_turn(prompt, model=runtime_config.claude_model),
+                runner=lambda prompt: run_turn(
+                    prompt,
+                    cwd=target_cwd,
+                    model=runtime_config.claude_model,
+                ),
                 memory=memory or None,
                 logger=_log,
             )

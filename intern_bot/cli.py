@@ -16,6 +16,13 @@ from .github import (
     format_github_report,
 )
 from .heartbeat import heartbeat_loop, heartbeat_once
+from .linear import (
+    check_linear_setup,
+    discover_linear_mcp_tools,
+    format_linear_report,
+    format_linear_tools_report,
+    write_linear_planner_tools_env,
+)
 from .memory import InternMemory
 from .perseus import check_perseus, format_perseus_report
 from .slack.app import (
@@ -39,7 +46,7 @@ async def _run(args: argparse.Namespace) -> None:
         config = InternConfig.from_env()
         memory = InternMemory(config.memory_path)
         memory.ensure_exists()
-        result = await run_turn(args.prompt, cwd=args.cwd, model=config.claude_model)
+        result = await run_turn(args.prompt, cwd=_configured_cwd(args.cwd, config), model=config.claude_model)
         if result.text.strip():
             print(result.text.strip())
         memory.append_event("manual_turn", args.prompt, cost_usd=result.total_cost_usd)
@@ -66,7 +73,7 @@ async def _run(args: argparse.Namespace) -> None:
 
     if args.command == "perseus" and args.perseus_command == "doctor":
         report = check_perseus(
-            cwd=args.cwd,
+            cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
             run_doctor=not args.skip_cli_doctor,
             run_index_status=not args.skip_index_status,
         )
@@ -77,7 +84,7 @@ async def _run(args: argparse.Namespace) -> None:
 
     if args.command == "github" and args.github_command == "doctor":
         report = check_github_repo(
-            cwd=args.cwd,
+            cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
             remote=args.remote,
             hostname=args.hostname,
             run_auth_status=not args.skip_auth_status,
@@ -85,7 +92,7 @@ async def _run(args: argparse.Namespace) -> None:
         print(format_github_report(report))
         ok = report.ok
         if args.with_perseus:
-            perseus_report = check_perseus(cwd=args.cwd)
+            perseus_report = check_perseus(cwd=_configured_cwd(args.cwd, InternConfig.from_env()))
             print()
             print(format_perseus_report(perseus_report))
             ok = ok and perseus_report.ok
@@ -106,6 +113,27 @@ async def _run(args: argparse.Namespace) -> None:
         print("GitHub App installation token: minted")
         if token.expires_at:
             print(f"expires_at: {token.expires_at}")
+        return
+
+    if args.command == "linear" and args.linear_command == "check":
+        report = check_linear_setup()
+        print(format_linear_report(report))
+        if args.require_config and not report.ok:
+            raise SystemExit(1)
+        return
+
+    if args.command == "linear" and args.linear_command == "tools":
+        report = await discover_linear_mcp_tools(timeout_seconds=args.timeout_seconds)
+        print(format_linear_tools_report(report))
+        if args.write_env and report.ok:
+            tools = report.recommended_planner_tools
+            if not tools:
+                print("No recommended planner-safe Linear tools matched; not writing env.")
+                raise SystemExit(1)
+            write_linear_planner_tools_env(tools, env_file=args.env_file)
+            print(f"wrote INTERN_LINEAR_PLANNER_TOOLS to {args.env_file}")
+        if args.require_tools and not report.ok:
+            raise SystemExit(1)
         return
 
     if args.command == "slack" and args.slack_command == "check":
@@ -130,7 +158,11 @@ async def _run(args: argparse.Namespace) -> None:
 
         async def runner(prompt: str):
             if not args.no_agent:
-                return await run_turn(prompt, cwd=args.cwd, model=runtime_config.claude_model)
+                return await run_turn(
+                    prompt,
+                    cwd=_configured_cwd(args.cwd, runtime_config),
+                    model=runtime_config.claude_model,
+                )
             from .agent import TurnResult
 
             return TurnResult(text=f"Slack plumbing OK. Received:\n{prompt}")
@@ -167,6 +199,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("heartbeat-once", help="Run one heartbeat tick.")
     subparsers.add_parser("heartbeat", help="Run the heartbeat loop forever.")
+
+    linear = subparsers.add_parser("linear", help="Linear integration helpers.")
+    linear_subparsers = linear.add_subparsers(dest="linear_command", required=True)
+    linear_check = linear_subparsers.add_parser("check", help="Check Linear MCP and bot policy config.")
+    linear_check.add_argument(
+        "--require-config",
+        action="store_true",
+        help="Exit nonzero unless local MCP prerequisites and Linear team allowlist are configured.",
+    )
+    linear_tools = linear_subparsers.add_parser(
+        "tools",
+        help="Connect to Linear MCP and print the tool names exposed to the SDK.",
+    )
+    linear_tools.add_argument(
+        "--require-tools",
+        action="store_true",
+        help="Exit nonzero unless Linear MCP is connected and returns tools.",
+    )
+    linear_tools.add_argument(
+        "--write-env",
+        action="store_true",
+        help="Write discovered tools to INTERN_LINEAR_PLANNER_TOOLS in the env file.",
+    )
+    linear_tools.add_argument("--env-file", default=".env.local", help="Env file to update with --write-env.")
+    linear_tools.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=60.0,
+        help="How long to wait for the Linear MCP server to leave pending status.",
+    )
 
     perseus = subparsers.add_parser("perseus", help="Perseus integration helpers.")
     perseus_subparsers = perseus.add_subparsers(dest="perseus_command", required=True)
@@ -267,6 +329,14 @@ def _require(value: str | None, name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required env var: {name}")
     return value
+
+
+def _configured_cwd(explicit_cwd: str | None, config: InternConfig) -> str | None:
+    if explicit_cwd:
+        return explicit_cwd
+    if config.target_repo_path is None:
+        return None
+    return str(config.target_repo_path)
 
 
 if __name__ == "__main__":

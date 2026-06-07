@@ -65,6 +65,8 @@ def check_perseus(
 
     version = _run((found, "--version"), cwd=cwd, timeout_seconds=timeout_seconds)
     doctor = _run((found, "doctor"), cwd=cwd, timeout_seconds=timeout_seconds) if run_doctor else None
+    if doctor is not None and _is_missing_subcommand(doctor, "doctor"):
+        doctor = None
     index_status = (
         _run((found, "index", "--status"), cwd=cwd, timeout_seconds=timeout_seconds)
         if run_index_status
@@ -112,6 +114,8 @@ def format_perseus_report(report: PerseusDoctorReport) -> str:
         lines.append("next: run `perseus login` as the operator; do not delegate login to the agent.")
     if report.index_status is not None and not report.index_status.ok:
         lines.append("next: run `perseus index` from the repo root, then rerun this check.")
+    if report.doctor is None:
+        lines.append("note: this Perseus CLI does not expose `perseus doctor`; skipped that check.")
     return "\n".join(lines)
 
 
@@ -149,3 +153,10 @@ def _truncate(text: str, limit: int = 1200) -> str:
 
 def _indent(text: str) -> str:
     return "\n".join(f"  {line}" for line in text.splitlines())
+
+
+def _is_missing_subcommand(result: PerseusCommandResult, command_name: str) -> bool:
+    if result.ok:
+        return False
+    output = result.output.lower()
+    return f"no such command '{command_name}'" in output or f'no such command "{command_name}"' in output

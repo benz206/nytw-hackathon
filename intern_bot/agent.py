@@ -8,7 +8,7 @@ from typing import Any
 from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
 from .github.app_auth import ensure_github_app_token_from_env
 from .github import DEFAULT_SHIPPER_TOOLS, SHIPPER_PROMPT
-from .linear import DEFAULT_PLANNER_TOOLS, PLANNER_PROMPT
+from .linear import DEFAULT_PLANNER_TOOLS, LinearConfig, PLANNER_PROMPT
 from .merge_guard import block_merges
 from .slack import ORCHESTRATOR_PROMPT, ORCHESTRATOR_TOOLS
 
@@ -38,6 +38,15 @@ def create_options(
             "project dependencies before starting the Intern."
         ) from exc
 
+    linear_config = LinearConfig.from_env()
+    effective_mcp_servers = mcp_servers if mcp_servers is not None else _default_mcp_servers(linear_config)
+    effective_planner_tools = (
+        planner_tools
+        if planner_tools is not None
+        else list(linear_config.planner_tools or DEFAULT_PLANNER_TOOLS)
+    )
+    planner_mcp_servers = [linear_config.mcp_server_name] if effective_mcp_servers else None
+
     kwargs: dict[str, Any] = {
         "system_prompt": ORCHESTRATOR_PROMPT,
         "allowed_tools": ORCHESTRATOR_TOOLS,
@@ -45,7 +54,8 @@ def create_options(
             "planner": AgentDefinition(
                 description="Reads/writes/triages Linear tickets and plans intern-safe work.",
                 prompt=PLANNER_PROMPT,
-                tools=planner_tools if planner_tools is not None else DEFAULT_PLANNER_TOOLS,
+                tools=effective_planner_tools,
+                mcpServers=planner_mcp_servers,
             ),
             "coder": AgentDefinition(
                 description="Writes and tests code on a feature branch after orienting with Perseus.",
@@ -66,10 +76,16 @@ def create_options(
         kwargs["cwd"] = cwd
     if model:
         kwargs["model"] = model
-    if mcp_servers:
-        kwargs["mcp_servers"] = mcp_servers
+    if effective_mcp_servers:
+        kwargs["mcp_servers"] = effective_mcp_servers
 
     return ClaudeAgentOptions(**kwargs)
+
+
+def _default_mcp_servers(linear_config: LinearConfig) -> dict[str, Any]:
+    if not linear_config.has_team_allowlist:
+        return {}
+    return {linear_config.mcp_server_name: linear_config.mcp_server_config()}
 
 
 async def run_turn(
