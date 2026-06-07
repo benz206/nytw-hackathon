@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
+from .github import DEFAULT_SHIPPER_TOOLS, SHIPPER_PROMPT
+from .linear import DEFAULT_PLANNER_TOOLS, PLANNER_PROMPT
 from .merge_guard import block_merges
-from .prompts import CODER_PROMPT, ORCHESTRATOR_PROMPT, PLANNER_PROMPT, SHIPPER_PROMPT
+from .slack import ORCHESTRATOR_PROMPT, ORCHESTRATOR_TOOLS
 
 
 @dataclass
@@ -35,22 +38,22 @@ def create_options(
 
     kwargs: dict[str, Any] = {
         "system_prompt": ORCHESTRATOR_PROMPT,
-        "allowed_tools": ["Agent"],
+        "allowed_tools": ORCHESTRATOR_TOOLS,
         "agents": {
             "planner": AgentDefinition(
                 description="Reads/writes/triages Linear tickets and plans intern-safe work.",
                 prompt=PLANNER_PROMPT,
-                tools=planner_tools or [],
+                tools=planner_tools if planner_tools is not None else DEFAULT_PLANNER_TOOLS,
             ),
             "coder": AgentDefinition(
                 description="Writes and tests code on a feature branch after orienting with Perseus.",
                 prompt=CODER_PROMPT,
-                tools=coder_tools or ["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
+                tools=coder_tools if coder_tools is not None else DEFAULT_CODER_TOOLS,
             ),
             "shipper": AgentDefinition(
                 description="Pushes branches and opens or updates GitHub PRs; never merges.",
                 prompt=SHIPPER_PROMPT,
-                tools=shipper_tools or ["Bash"],
+                tools=shipper_tools if shipper_tools is not None else DEFAULT_SHIPPER_TOOLS,
             ),
         },
         "hooks": {

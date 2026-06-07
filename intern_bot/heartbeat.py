@@ -11,7 +11,7 @@ import random
 from .agent import TurnResult, run_turn
 from .config import InternConfig
 from .memory import InternMemory
-from .prompts import HEARTBEAT_CHECKLIST
+from .slack import HEARTBEAT_CHECKLIST
 
 PostMessage = Callable[[str], Awaitable[None]]
 RunTurn = Callable[[str], Awaitable[TurnResult]]
@@ -102,4 +102,3 @@ def _summarize(text: str, limit: int = 180) -> str:
     if len(one_line) <= limit:
         return one_line
     return one_line[: limit - 3] + "..."
-

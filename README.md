@@ -17,9 +17,10 @@ unless a human-authorized merge flag is present.
 ## Install
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Run
@@ -74,7 +75,10 @@ intern_bot/
   heartbeat.py    OpenClaw-style heartbeat loop and cap checks
   memory.py       Markdown audit log and daily accounting
   merge_guard.py  hard merge/force-push blocker
-  prompts.py      orchestrator, planner, coder, shipper, heartbeat prompts
+  slack/          Slack orchestrator prompt, heartbeat prompt, tool defaults
+  linear/         Linear planner prompt and MCP tool defaults
+  codebase/       Coder prompt and repo/Bash tool defaults
+  github/         Shipper prompt and PR tool defaults
 tests/
   test_memory.py
   test_merge_guard.py
@@ -113,5 +117,6 @@ Before letting the coder agent work autonomously:
 ## Tests
 
 ```bash
+source .venv/bin/activate
 pytest
 ```
