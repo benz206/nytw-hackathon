@@ -152,19 +152,20 @@ something unambiguous like `merge PR #123`.
 
 ## Perseus Setup
 
-Perseus setup is operator-side. Do not have the agent run login commands.
+Perseus setup is operator-side. Do not have the agent run login commands. The
+setup lives in this Intern runtime repo, but Perseus should run against the
+target product repo configured by `INTERN_TARGET_REPO`, for example
+`/Users/benz/Documents/task-manager`.
 
 First sign in at [perseus.computer](https://perseus.computer), open the console,
 and use **Set up GitHub access** to authorize the GitHub repos the Intern is
-allowed to search. Then install and authenticate Perseus locally, and index every
-allowlisted repo:
+allowed to search. Then install and authenticate Perseus locally.
 
 ```bash
 curl -fsSL https://perseus.computer/install.sh | sh
 perseus login
-cd /path/to/repo
+cd /Users/benz/Documents/task-manager
 perseus doctor
-perseus index
 perseus index --status
 ```
 
@@ -174,10 +175,24 @@ not initiate OAuth in an agent session.
 Some Perseus CLI versions do not expose `perseus doctor`; in that case
 `perseus index --status` is the important readiness check.
 
+Perseus has two useful index paths:
+
+- Hosted/full Perseus: have the operator run hosted indexing only for repos that
+  are approved for upload. The default local-path form of `perseus index`
+  uploads the working-tree files, including uncommitted edits, to the hosted
+  service. To avoid uploading local edits, index by GitHub target instead:
+  `perseus index owner/repo`.
+- Local/offline Perseus: run `perseus index --local` from the repo root to build
+  an isolated local sqlite index with no hosted server. Query it with
+  `perseus query --local "where are tasks displayed?"`.
+
 This repo includes an operator preflight:
 
 ```bash
-intern perseus doctor --cwd /path/to/repo
+export INTERN_TARGET_REPO=/Users/benz/Documents/task-manager
+intern perseus doctor
+# or explicitly:
+intern perseus doctor --cwd /Users/benz/Documents/task-manager
 ```
 
 Re-index after pulls or on a timer so the coder subagent gets fresh search
@@ -186,8 +201,12 @@ results. The coder prompt allows read-only Perseus commands such as:
 ```bash
 perseus doctor
 perseus index --status
-perseus query "where is authentication handled?"
-perseus query benz206/nytw-hackathon "where is authentication handled?"
+perseus query "where are tasks displayed?"
+perseus query --trace "where are tasks displayed?"
+perseus query --no-summary "where are tasks displayed?"
+perseus query --files-only "where are tasks displayed?"
+perseus query --local --no-summary "where are tasks displayed?"
+perseus query owner/task-manager "where are tasks displayed?"
 perseus open path/to/file.py:42
 ```
 

@@ -87,6 +87,7 @@ async def _run(args: argparse.Namespace) -> None:
             run_doctor=not args.skip_cli_doctor,
             run_index_status=not args.skip_index_status,
             run_query_probe=not args.skip_query_probe,
+            run_local_query_probe=not args.skip_local_query_probe,
         )
         print(format_perseus_report(report))
         if not report.ok:
@@ -108,6 +109,7 @@ async def _run(args: argparse.Namespace) -> None:
             perseus_report = check_perseus(
                 cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
                 run_query_probe=True,
+                run_local_query_probe=True,
             )
             print()
             print(format_perseus_report(perseus_report))
@@ -293,6 +295,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-query-probe",
         action="store_true",
         help="Skip the read-only `perseus query` probe used when index status is not ready.",
+    )
+    doctor.add_argument(
+        "--skip-local-query-probe",
+        action="store_true",
+        help="Skip the offline `perseus query --local` fallback probe.",
     )
 
     github = subparsers.add_parser("github", help="GitHub repo integration helpers.")

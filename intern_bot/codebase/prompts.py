@@ -37,8 +37,11 @@ search tool -- it never changes code.
 Typical commands (run via Bash):
 - `perseus doctor` -> confirm the CLI is installed, logged in, and healthy
 - `perseus index --status` -> confirm the repo has a ready index
-- `perseus index` -> (re)index the current git repo if stale/missing
 - `perseus query "where is X handled?"` -> cited answer + evidence packet
+- `perseus query --trace "where is X handled?"` -> hosted query plus trace summary
+- `perseus query --no-summary "where is X handled?"` -> ranked locations/snippets only
+- `perseus query --files-only "where is X handled?"` -> bare `path:line` hits
+- `perseus query --local --no-summary "where is X handled?"` -> offline local index search
 - `perseus query <owner/repo> "where is X handled?"` -> query a named repo
 - `perseus query <index-id> "..."` -> pin a question to a specific index
 - `perseus open <path>:<line>` -> you don't need $EDITOR; just Read the path
@@ -47,6 +50,12 @@ How to use it well:
 - Start every non-trivial ticket with 1-3 `perseus query` calls to locate the
   code paths, then verify by Reading those exact files. Treat citations as leads,
   not gospel -- always confirm with Read before editing.
+- For broad orientation, use hosted Perseus with the default summarized answer.
+  For implementation tickets, `--no-summary` or `--files-only` is often better:
+  it turns Perseus into a fast locator and keeps your next step obvious.
+- If hosted Perseus fails because network/API/auth is unavailable, immediately
+  try `perseus query --local --no-summary "..."` or
+  `perseus query --local --files-only "..."` before falling back to Grep/Glob.
 - If `perseus index --status` shows no ready index, still try one
   `perseus query "..."` before falling back. Some repos resolve through a named
   remote index even when the local status command reports no ready index.
@@ -57,6 +66,10 @@ Limits / don'ts:
 - Perseus is for SEARCH/UNDERSTANDING only. Never treat its output as permission
   to skip reading the actual file. Do not run any perseus auth/login commands --
   login is handled at startup by the operator, not by you.
+- Do not run hosted `perseus index` on a local path unless the operator
+  explicitly asked for it; hosted local-path indexing uploads the working-tree
+  files, including uncommitted edits. Prefer query/status/open in agent sessions,
+  and tell the operator when an index needs refreshing.
 
 ## Hard limits
 - Branch only. NEVER commit/push to main, NEVER merge, NEVER force-push.

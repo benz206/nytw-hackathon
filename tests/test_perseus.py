@@ -163,4 +163,51 @@ def test_check_perseus_treats_successful_query_probe_as_available(monkeypatch, t
     rendered = format_perseus_report(report)
     assert "index: failed (2)" in rendered
     assert "query_probe: ok" in rendered
-    assert "query` works" in rendered
+    assert "query probe works" in rendered
+
+
+def test_check_perseus_falls_back_to_local_query_probe(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(command, cwd, text, capture_output, timeout, check):
+        calls.append(tuple(command))
+        if tuple(command) == ("/bin/perseus", "index", "--status"):
+            return SimpleNamespace(returncode=2, stdout="", stderr="no ready index")
+        if tuple(command) == ("/bin/perseus", "query", "where is code?"):
+            return SimpleNamespace(returncode=2, stdout="", stderr="cannot reach perseus API")
+        if tuple(command) == (
+            "/bin/perseus",
+            "query",
+            "--local",
+            "--files-only",
+            "where is code?",
+        ):
+            return SimpleNamespace(returncode=0, stdout="src/app/page.tsx:1\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setenv("PERSEUS_TOKEN_PATH", str(tmp_path / "token"))
+    monkeypatch.setattr(perseus.subprocess, "run", fake_run)
+
+    report = check_perseus(
+        cwd=tmp_path,
+        executable="/bin/perseus",
+        run_doctor=False,
+        run_query_probe=True,
+        run_local_query_probe=True,
+        query_probe="where is code?",
+        timeout_seconds=7,
+    )
+
+    assert report.ok
+    assert report.query_available
+    assert report.query_mode == "local"
+    assert calls == [
+        ("/bin/perseus", "--version"),
+        ("/bin/perseus", "index", "--status"),
+        ("/bin/perseus", "query", "where is code?"),
+        ("/bin/perseus", "query", "--local", "--files-only", "where is code?"),
+    ]
+
+    rendered = format_perseus_report(report)
+    assert "local_query_probe: ok" in rendered
+    assert "via local query" in rendered

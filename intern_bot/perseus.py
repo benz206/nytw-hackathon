@@ -39,6 +39,7 @@ class PerseusDoctorReport:
     doctor: PerseusCommandResult | None = None
     index_status: PerseusCommandResult | None = None
     query_probe: PerseusCommandResult | None = None
+    local_query_probe: PerseusCommandResult | None = None
 
     @property
     def ok(self) -> bool:
@@ -47,7 +48,9 @@ class PerseusDoctorReport:
             return False
 
         readiness_checks = [
-            check for check in (self.index_status, self.query_probe) if check is not None
+            check
+            for check in (self.index_status, self.query_probe, self.local_query_probe)
+            if check is not None
         ]
         return not readiness_checks or any(check.ok for check in readiness_checks)
 
@@ -55,7 +58,20 @@ class PerseusDoctorReport:
     def query_available(self) -> bool:
         if self.index_status is not None and self.index_status.ok:
             return True
-        return self.query_probe is not None and self.query_probe.ok
+        return any(
+            check is not None and check.ok
+            for check in (self.query_probe, self.local_query_probe)
+        )
+
+    @property
+    def query_mode(self) -> str | None:
+        if self.index_status is not None and self.index_status.ok:
+            return "hosted"
+        if self.query_probe is not None and self.query_probe.ok:
+            return "hosted"
+        if self.local_query_probe is not None and self.local_query_probe.ok:
+            return "local"
+        return None
 
 
 def check_perseus(
@@ -64,6 +80,7 @@ def check_perseus(
     run_doctor: bool = True,
     run_index_status: bool = True,
     run_query_probe: bool = False,
+    run_local_query_probe: bool = False,
     query_probe: str = "where is the main application code?",
     executable: str | None = None,
     timeout_seconds: int = 120,
@@ -92,6 +109,19 @@ def check_perseus(
         if run_query_probe and (index_status is None or not index_status.ok)
         else None
     )
+    local_probe = (
+        _run(
+            (found, "query", "--local", "--files-only", query_probe),
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+        )
+        if run_local_query_probe
+        and not (
+            (index_status is not None and index_status.ok)
+            or (probe is not None and probe.ok)
+        )
+        else None
+    )
     return PerseusDoctorReport(
         executable=found,
         token_path=token_path,
@@ -100,6 +130,7 @@ def check_perseus(
         doctor=doctor,
         index_status=index_status,
         query_probe=probe,
+        local_query_probe=local_probe,
     )
 
 
@@ -124,6 +155,7 @@ def format_perseus_report(report: PerseusDoctorReport) -> str:
         ("doctor", report.doctor),
         ("index", report.index_status),
         ("query_probe", report.query_probe),
+        ("local_query_probe", report.local_query_probe),
     ):
         if result is None:
             continue
@@ -136,11 +168,19 @@ def format_perseus_report(report: PerseusDoctorReport) -> str:
         lines.append("next: run `perseus login` as the operator; do not delegate login to the agent.")
     if report.index_status is not None and not report.index_status.ok and report.query_available:
         lines.append(
-            "note: `perseus index --status` failed, but `perseus query` works; "
-            "treating Perseus as usable."
+            "note: `perseus index --status` failed, but a Perseus query probe works; "
+            f"treating Perseus as usable via {report.query_mode} query."
         )
     elif report.index_status is not None and not report.index_status.ok:
-        lines.append("next: run `perseus index` from the repo root, then rerun this check.")
+        lines.append(
+            "next: run `perseus index owner/repo` for hosted GitHub indexing, or "
+            "`perseus index --local` from the target repo for local-only search."
+        )
+    if report.local_query_probe is not None and not report.local_query_probe.ok:
+        lines.append(
+            "local: `perseus query --local` is not ready; run `perseus index --local` "
+            "from the target repo and ensure the local embed transport is running."
+        )
     if report.doctor is None:
         lines.append("note: this Perseus CLI does not expose `perseus doctor`; skipped that check.")
     return "\n".join(lines)

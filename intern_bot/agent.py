@@ -132,6 +132,7 @@ def _perseus_runtime_prompt(cwd: str | None) -> str:
         cwd=cwd,
         run_doctor=False,
         run_query_probe=True,
+        run_local_query_probe=True,
         timeout_seconds=15,
     )
     lines = ["\n\n## Runtime Perseus status"]
@@ -142,27 +143,39 @@ def _perseus_runtime_prompt(cwd: str | None) -> str:
         )
         return "\n".join(lines) + "\n"
 
+    lines.append(f"- Target repo cwd for Perseus and code edits: {cwd}.")
     lines.append(f"- Perseus executable: {report.executable}.")
     lines.append(f"- Perseus token: {'found' if report.token_exists else 'missing'} at {report.token_path}.")
     if report.query_available:
+        query_command = (
+            '`perseus query --local --no-summary "..."`'
+            if report.query_mode == "local"
+            else '`perseus query "..."`'
+        )
         lines.append(
-            "- Perseus query is available for this repo. Use `perseus query \"...\"` "
-            "before broad Read/Grep/Glob orientation."
+            f"- Perseus query is available for this repo via {report.query_mode or 'unknown'} mode. "
+            f"Use {query_command} before broad Read/Grep/Glob orientation."
         )
         if report.index_status is not None and not report.index_status.ok:
             lines.append(
                 "- `perseus index --status` reported not ready, but the query probe "
                 "works; trust query availability for orientation."
             )
+        if report.query_mode == "hosted":
+            lines.append(
+                "- For implementation tickets, prefer `perseus query --no-summary \"...\"` "
+                "or `perseus query --files-only \"...\"` when you only need ranked locations."
+            )
     else:
         reason = "unknown"
-        for result in (report.query_probe, report.index_status, report.version):
+        for result in (report.local_query_probe, report.query_probe, report.index_status, report.version):
             if result is not None and not result.ok and result.output:
                 reason = result.output.splitlines()[0]
                 break
         lines.append(
-            f"- Perseus query was not confirmed before this turn: {reason}. Try one "
-            "`perseus query` for non-trivial work, then fall back if it fails."
+            f"- Perseus query was not confirmed before this turn: {reason}. Try hosted "
+            "`perseus query` first for non-trivial work, then `perseus query --local "
+            "--files-only` if hosted fails, then fall back if both fail."
         )
     return "\n".join(lines) + "\n"
 
