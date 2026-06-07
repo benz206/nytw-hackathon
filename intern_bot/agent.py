@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import inspect
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
 from .github.app_auth import ensure_github_app_token_from_env
@@ -16,6 +17,7 @@ from .perseus import check_perseus
 from .slack import ORCHESTRATOR_PROMPT, ORCHESTRATOR_TOOLS
 
 Logger = Callable[[str], None]
+ProgressCallback = Callable[[str], Awaitable[None] | None]
 
 
 @dataclass
@@ -253,6 +255,7 @@ async def run_turn(
     git_author_name: str | None = None,
     git_author_email: str | None = None,
     memory_path: str | Path | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TurnResult:
     """Run one orchestrator turn and collect a human-postable result."""
     try:
@@ -280,6 +283,7 @@ async def run_turn(
         memory_path=memory_path,
     )
     result = TurnResult()
+    progress_seen: set[str] = set()
 
     try:
         if logger is not None:
@@ -288,6 +292,10 @@ async def run_turn(
             result.raw_messages.append(message)
             if logger is not None:
                 logger(f"[agent] {_sdk_message_summary(message, TextBlock)}")
+            progress = _sdk_progress_update(message, TextBlock)
+            if progress and progress not in progress_seen:
+                progress_seen.add(progress)
+                await _emit_progress(progress_callback, progress)
             if isinstance(message, AssistantMessage):
                 result.text = _append_distinct(result.text, _assistant_text(message, TextBlock))
             elif isinstance(message, ResultMessage):
@@ -309,6 +317,14 @@ async def run_turn(
             f"cost_usd={result.total_cost_usd:.6f}"
         )
     return result
+
+
+async def _emit_progress(callback: ProgressCallback | None, text: str) -> None:
+    if callback is None:
+        return
+    maybe_awaitable = callback(text)
+    if inspect.isawaitable(maybe_awaitable):
+        await maybe_awaitable
 
 
 def _assistant_text(message: Any, text_block_type: Any) -> str:
@@ -365,6 +381,21 @@ def _sdk_message_summary(message: Any, text_block_type: Any) -> str:
     return f"sdk message {name}"
 
 
+def _sdk_progress_update(message: Any, text_block_type: Any) -> str | None:
+    name = type(message).__name__
+    if name == "AssistantMessage":
+        for block in getattr(message, "content", []) or []:
+            progress = _content_block_progress(block, text_block_type)
+            if progress:
+                return progress
+    if name in {"TaskStartedMessage", "TaskProgressMessage"}:
+        description = _one_line(str(getattr(message, "description", "") or ""), limit=120)
+        if not description:
+            return None
+        return f"quick update: {description}"
+    return None
+
+
 def _content_block_summary(block: Any, text_block_type: Any) -> str:
     name = type(block).__name__
     if isinstance(block, text_block_type) or (getattr(block, "type", None) == "text" and hasattr(block, "text")):
@@ -393,6 +424,34 @@ def _content_block_summary(block: Any, text_block_type: Any) -> str:
             f"content_chars={len(str(content or ''))}"
         )
     return name
+
+
+def _content_block_progress(block: Any, text_block_type: Any) -> str | None:
+    name = type(block).__name__
+    if isinstance(block, text_block_type) or (getattr(block, "type", None) == "text" and hasattr(block, "text")):
+        return None
+    if name in {"ToolUseBlock", "ServerToolUseBlock"} or hasattr(block, "input"):
+        tool_name = str(getattr(block, "name", "") or "")
+        tool_input = getattr(block, "input", None)
+        if tool_name == "Agent" and isinstance(tool_input, dict):
+            subagent_type = tool_input.get("subagent_type")
+            if subagent_type == "planner":
+                return "I'm checking Linear and picking the safe path."
+            if subagent_type == "coder":
+                return "I'm working on the code branch now."
+            if subagent_type == "shipper":
+                return "I'm opening the draft PR now."
+        if tool_name.lower() in {"bash", "shell"} and isinstance(tool_input, dict):
+            command = tool_input.get("command") or tool_input.get("cmd")
+            if isinstance(command, str):
+                lowered = command.lower()
+                if "perseus " in lowered:
+                    return "I'm checking Perseus for repo context."
+                if "intern github open-pr" in lowered or "gh pr create" in lowered:
+                    return "I'm opening the draft PR now."
+                if "git switch -c" in lowered or "git checkout -b" in lowered:
+                    return "I'm setting up the feature branch."
+    return None
 
 
 def _one_line(text: str, limit: int = 160) -> str:

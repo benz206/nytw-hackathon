@@ -22,7 +22,8 @@ from intern_bot.env import load_env_file
 from intern_bot.memory import InternMemory
 
 
-Runner = Callable[[str], Awaitable[TurnResult]]
+ProgressCallback = Callable[[str], Awaitable[None] | None]
+Runner = Callable[..., Awaitable[TurnResult]]
 
 
 class Poster(Protocol):
@@ -390,7 +391,18 @@ async def handle_slack_text(
                 f"channel={channel} thread_ts={thread_ts or '-'} "
                 f"context_messages={len(thread_messages)} work_ack_sent={work_ack_sent}"
             )
-        result = await (runner or run_turn)(prompt)
+        result = await _run_with_progress(
+            runner or run_turn,
+            prompt,
+            progress_callback=_progress_poster(
+                poster=poster,
+                channel=channel,
+                thread_ts=thread_ts,
+                thread_context=thread_context,
+                context_thread_ts=effective_thread_ts,
+                logger=logger,
+            ),
+        )
     except Exception as exc:
         reply = f"Intern runtime error: {_one_line(str(exc), limit=300)}"
         try:
@@ -462,6 +474,115 @@ async def handle_slack_text(
     return result
 
 
+async def _run_with_progress(
+    runner: Runner,
+    prompt: str,
+    *,
+    progress_callback: ProgressCallback,
+) -> TurnResult:
+    try:
+        parameters = inspect.signature(runner).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "progress_callback" in parameters:
+        return await runner(prompt, progress_callback=progress_callback)
+    return await runner(prompt)
+
+
+def _progress_poster(
+    *,
+    poster: Poster,
+    channel: str,
+    thread_ts: str | None,
+    thread_context: ThreadContextStore | None,
+    context_thread_ts: str | None,
+    logger: Logger | None,
+) -> ProgressCallback:
+    seen: set[str] = set()
+    max_updates = 3
+
+    async def post_progress(text: str) -> None:
+        cleaned = _slack_progress_text(text)
+        if not cleaned or cleaned in seen or len(seen) >= max_updates:
+            return
+        seen.add(cleaned)
+        try:
+            await poster.post_message(cleaned, channel=channel, thread_ts=thread_ts)
+        except Exception as exc:
+            if logger is not None:
+                logger(f"[slack] progress post warning: {_one_line(str(exc), limit=240)}")
+            return
+        if thread_context is not None and context_thread_ts:
+            _append_thread_context(
+                thread_context,
+                channel=channel,
+                thread_ts=context_thread_ts,
+                text=cleaned,
+                bot=True,
+                logger=logger,
+            )
+
+    return post_progress
+
+
+def _slack_progress_text(text: str) -> str | None:
+    """Turn SDK/runtime progress into a human Slack update."""
+    cleaned = _one_line(text, limit=240)
+    if not cleaned:
+        return None
+
+    normalized = cleaned.lower()
+    canned = {
+        "i'm checking linear and picking the safe path.": (
+            "checking Linear. if the ticket is secretly cursed, i'll notice"
+        ),
+        "i'm working on the code branch now.": (
+            "in the code now. poking it with a stick and taking notes"
+        ),
+        "i'm opening the draft pr now.": (
+            "making the draft PR. trying to look employable in the title"
+        ),
+        "i'm checking perseus for repo context.": (
+            "asking Perseus where this repo keeps the weird stuff"
+        ),
+        "i'm setting up the feature branch.": (
+            "making a branch before i touch anything. small mercy"
+        ),
+    }
+    if normalized in canned:
+        return canned[normalized]
+
+    if normalized.startswith("quick update:"):
+        description = cleaned.split(":", 1)[1].strip()
+        return _task_progress_text(description)
+
+    return cleaned
+
+
+def _task_progress_text(description: str) -> str | None:
+    description = _one_line(description, limit=120)
+    if not description:
+        return None
+    normalized = description.lower()
+
+    if "perseus" in normalized:
+        return "asking Perseus for the map. my backup plan is vibes, so this is better"
+    if "orient" in normalized or "project structure" in normalized:
+        return "getting oriented in the repo. already judging a few folder names"
+    if "list" in normalized and ("file" in normalized or "root" in normalized):
+        return "checking the file layout. repo archaeology, but with tests hopefully"
+    if "roast" in normalized or "flame" in normalized:
+        return "starting the codebase roast. keeping it HR-safe, barely"
+    if "branch" in normalized:
+        return "branch setup time. i am choosing a lane before causing traffic"
+    if "test" in normalized:
+        return "running tests. preparing my surprised face either way"
+    if "pull request" in normalized or "pr" in normalized:
+        return "PR stuff now. making it presentable before adults see it"
+
+    return f"still digging: {description}"
+
+
 async def _post_perseus_usage_log(
     result: TurnResult,
     *,
@@ -500,8 +621,9 @@ def _format_perseus_usage_log(
     event_type: str,
 ) -> str | None:
     commands = _extract_perseus_commands(result.raw_messages)
+    outputs = _extract_perseus_outputs(result.raw_messages)
     summary = _extract_perseus_summary(result.text)
-    if not commands and not summary:
+    if not commands and not outputs and not summary:
         return None
 
     lines = [
@@ -516,6 +638,11 @@ def _format_perseus_usage_log(
         lines.extend(f"- {_sanitize_codeblock_text(command)}" for command in commands)
     else:
         lines.append("commands: not observed in SDK tool stream")
+    if outputs:
+        lines.append("outputs:")
+        for command, output in outputs:
+            lines.append(f"- {_sanitize_codeblock_text(command)}:")
+            lines.extend(_format_log_output(output))
     if summary:
         lines.append("summary:")
         lines.extend(f"- {_sanitize_codeblock_text(line)}" for line in summary)
@@ -538,6 +665,36 @@ def _extract_perseus_commands(raw_messages: Sequence[Any]) -> list[str]:
     return commands
 
 
+def _extract_perseus_outputs(raw_messages: Sequence[Any]) -> list[tuple[str, str]]:
+    outputs: list[tuple[str, str]] = []
+    pending: dict[str, list[str]] = {}
+    for message in raw_messages:
+        for block in getattr(message, "content", []) or []:
+            command = _tool_use_command(block)
+            if command:
+                lines = _perseus_command_lines(command)
+                tool_use_id = _tool_use_id(block)
+                if lines and tool_use_id:
+                    pending[tool_use_id] = lines
+                continue
+
+            tool_result_id = str(getattr(block, "tool_use_id", "") or "")
+            if not tool_result_id or tool_result_id not in pending:
+                continue
+            output = _tool_result_text(block)
+            for line in pending.pop(tool_result_id):
+                outputs.append((line, output))
+    return outputs
+
+
+def _tool_use_id(block: Any) -> str | None:
+    for attr in ("id", "tool_use_id"):
+        value = getattr(block, attr, None)
+        if value:
+            return str(value)
+    return None
+
+
 def _tool_use_command(block: Any) -> str | None:
     name = str(getattr(block, "name", "") or "").lower()
     tool_input = getattr(block, "input", None)
@@ -550,6 +707,31 @@ def _tool_use_command(block: Any) -> str | None:
         if isinstance(value, str):
             return value
     return None
+
+
+def _tool_result_text(block: Any) -> str:
+    content = getattr(block, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Mapping):
+        text = content.get("text") or content.get("content")
+        return str(text or content)
+    if isinstance(content, Sequence):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, Mapping):
+                text = item.get("text") or item.get("content")
+                parts.append(str(text or item))
+            elif hasattr(item, "text"):
+                parts.append(str(getattr(item, "text") or ""))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    return str(content)
 
 
 def _perseus_command_lines(command: str) -> list[str]:
@@ -572,6 +754,20 @@ def _extract_perseus_summary(text: str) -> list[str]:
 
 def _sanitize_codeblock_text(text: str) -> str:
     return text.replace("```", "` ` `")
+
+
+def _format_log_output(output: str) -> list[str]:
+    cleaned = _sanitize_codeblock_text(output.strip())
+    if not cleaned:
+        return ["  (no output)"]
+    clipped = _truncate_text(cleaned, limit=1800)
+    return [f"  {line}" for line in clipped.splitlines()]
+
+
+def _truncate_text(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 24].rstrip() + "\n  ... truncated ..."
 
 
 def format_slack_prompt(
@@ -668,9 +864,13 @@ def _should_send_work_ack(text: str, thread_messages: Sequence[dict[str, Any]]) 
 def _work_ack_text(text: str, thread_messages: Sequence[dict[str, Any]]) -> str:
     combined = f"{_thread_text(thread_messages)}\n{text}".lower()
     normalized = _normalize_casual_text(combined)
+    if re.search(r"\b(roast|flame|audit|review)\b.*\b(codebase|repo)\b", normalized) or re.search(
+        r"\b(codebase|repo)\b.*\b(roast|flame|audit|review)\b", normalized
+    ):
+        return "on it, i'll go stare at the repo until it confesses"
     if "pr" in normalized or "pull request" in normalized or re.search(r"\bopen\b.*\bp\b", normalized):
-        return "on it, I'll make the change and open a draft PR"
-    return "on it, I'll work it and report back here"
+        return "on it, i'll make the change and open a draft PR"
+    return "on it, i'll work it and report back here"
 
 
 def _looks_like_pr_status_question(normalized: str) -> bool:
@@ -683,6 +883,8 @@ def _looks_like_work_request(text: str) -> bool:
         re.search(r"\b(open|create|make|raise)\b.*\b(pr|pull request)\b", normalized)
         or re.search(r"\b(add|change|update|fix|implement|edit)\b.*\b(readme|file|code|test|bug|ticket)\b", normalized)
         or re.search(r"\b(readme|repo|branch|commit)\b.*\b(change|update|fix|pr|pull request)\b", normalized)
+        or re.search(r"\b(explore|roast|flame|audit|review)\b.*\b(codebase|repo)\b", normalized)
+        or re.search(r"\b(codebase|repo)\b.*\b(explore|roast|flame|audit|review)\b", normalized)
     )
 
 
@@ -905,7 +1107,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 activity=activity,
                 thread_history=thread_history,
                 thread_context=thread_context,
-                runner=lambda prompt: run_turn(
+                runner=lambda prompt, progress_callback=None: run_turn(
                     prompt,
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
@@ -914,6 +1116,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                     git_author_email=runtime_config.git_author_email,
                     memory_path=runtime_config.memory_path,
                     logger=_log,
+                    progress_callback=progress_callback,
                 ),
                 memory=memory or None,
                 logger=_log,
@@ -947,7 +1150,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 activity=activity,
                 thread_history=thread_history,
                 thread_context=thread_context,
-                runner=lambda prompt: run_turn(
+                runner=lambda prompt, progress_callback=None: run_turn(
                     prompt,
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
@@ -956,6 +1159,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                     git_author_email=runtime_config.git_author_email,
                     memory_path=runtime_config.memory_path,
                     logger=_log,
+                    progress_callback=progress_callback,
                 ),
                 memory=memory or None,
                 logger=_log,

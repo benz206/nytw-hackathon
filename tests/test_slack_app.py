@@ -13,6 +13,7 @@ from intern_bot.slack.app import (
     SlackThreadContext,
     _BoltThreadHistory,
     _create_single_workspace_bolt_app,
+    _slack_progress_text,
     casual_intern_reply,
     format_slack_prompt,
     handle_slack_text,
@@ -180,9 +181,90 @@ def test_handle_slack_text_posts_work_ack_before_runner():
 
     assert result.text == "opened it: https://github.com/example/repo/pull/1"
     assert poster.messages == [
-        ("on it, I'll make the change and open a draft PR", "C123", "111.222"),
+        ("on it, i'll make the change and open a draft PR", "C123", "111.222"),
         ("opened it: https://github.com/example/repo/pull/1", "C123", "111.222"),
     ]
+
+
+def test_handle_slack_text_posts_progress_updates_from_runner():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append((text, channel, thread_ts))
+
+    async def runner(prompt: str, *, progress_callback):
+        await progress_callback("I'm checking Linear and picking the safe path.")
+        await progress_callback("I'm working on the code branch now.")
+        await progress_callback("I'm working on the code branch now.")
+        return TurnResult(text="opened it: https://github.com/example/repo/pull/1")
+
+    poster = RecordingPoster()
+
+    result = asyncio.run(
+        handle_slack_text(
+            "<@U123> create a linear ticket then open a pr",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            poster=poster,
+            runner=runner,
+        )
+    )
+
+    assert result.text == "opened it: https://github.com/example/repo/pull/1"
+    assert poster.messages == [
+        ("on it, i'll make the change and open a draft PR", "C123", "111.222"),
+        ("checking Linear. if the ticket is secretly cursed, i'll notice", "C123", "111.222"),
+        ("in the code now. poking it with a stick and taking notes", "C123", "111.222"),
+        ("opened it: https://github.com/example/repo/pull/1", "C123", "111.222"),
+    ]
+
+
+def test_handle_slack_text_acks_codebase_roast_request_in_intern_voice():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append((text, channel, thread_ts))
+
+    async def runner(prompt: str, *, progress_callback):
+        await progress_callback("quick update: Codebase roast exploration")
+        return TurnResult(text="found three crimes and one misdemeanor")
+
+    poster = RecordingPoster()
+
+    result = asyncio.run(
+        handle_slack_text(
+            "<@U123> go explore our codebase, flame it whats bad about it",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            poster=poster,
+            runner=runner,
+        )
+    )
+
+    assert result.text == "found three crimes and one misdemeanor"
+    assert poster.messages == [
+        ("on it, i'll go stare at the repo until it confesses", "C123", "111.222"),
+        ("starting the codebase roast. keeping it HR-safe, barely", "C123", "111.222"),
+        ("found three crimes and one misdemeanor", "C123", "111.222"),
+    ]
+
+
+def test_slack_progress_text_turns_raw_sdk_updates_into_intern_voice():
+    assert _slack_progress_text("quick update: Codebase roast exploration") == (
+        "starting the codebase roast. keeping it HR-safe, barely"
+    )
+    assert _slack_progress_text("quick update: Running Orient with Perseus on project structure") == (
+        "asking Perseus for the map. my backup plan is vibes, so this is better"
+    )
+    assert _slack_progress_text("quick update: Running List project root files") == (
+        "checking the file layout. repo archaeology, but with tests hopefully"
+    )
 
 
 def test_handle_slack_text_logs_perseus_usage_to_logs_channel():
@@ -194,16 +276,24 @@ def test_handle_slack_text_logs_perseus_usage_to_logs_channel():
             self.messages.append((text, channel, thread_ts))
 
     class BashToolUseBlock:
+        id = "toolu_1"
         name = "Bash"
         input = {"command": 'perseus query "where is Slack logging handled?"'}
+
+    class ToolResultBlock:
+        tool_use_id = "toolu_1"
+        content = "intern_bot/slack/app.py:430 handles Perseus usage logs"
 
     class AssistantMessage:
         content = [BashToolUseBlock()]
 
+    class ToolResultMessage:
+        content = [ToolResultBlock()]
+
     async def runner(prompt: str) -> TurnResult:
         return TurnResult(
             text="- branch: intern/test\n- perseus: used (where is Slack logging handled?)",
-            raw_messages=[AssistantMessage()],
+            raw_messages=[AssistantMessage(), ToolResultMessage()],
         )
 
     poster = RecordingPoster()
@@ -228,6 +318,8 @@ def test_handle_slack_text_logs_perseus_usage_to_logs_channel():
     assert "source_channel: C123" in log_message
     assert "thread_ts: 111.222" in log_message
     assert 'perseus query "where is Slack logging handled?"' in log_message
+    assert "outputs:" in log_message
+    assert "intern_bot/slack/app.py:430 handles Perseus usage logs" in log_message
     assert "perseus: used (where is Slack logging handled?)" in log_message
     assert poster.messages[1] == (
         "- branch: intern/test\n- perseus: used (where is Slack logging handled?)",
@@ -275,7 +367,7 @@ def test_handle_slack_text_uses_thread_context_for_affirmation():
 
     assert result.text == "done, opened https://github.com/example/repo/pull/2"
     assert poster.messages == [
-        "on it, I'll make the change and open a draft PR",
+        "on it, i'll make the change and open a draft PR",
         "done, opened https://github.com/example/repo/pull/2",
     ]
 
@@ -337,7 +429,7 @@ def test_handle_slack_text_uses_local_thread_cache_when_history_is_missing():
     assert result.text == "on it, opened https://github.com/example/repo/pull/12"
     assert poster.messages == [
         'TOT-12 is "Add the Intern (Claude) to contributors" -- basically add me to the contributors list. want me to just take it?',
-        "on it, I'll make the change and open a draft PR",
+        "on it, i'll make the change and open a draft PR",
         "on it, opened https://github.com/example/repo/pull/12",
     ]
     assert "Recent Slack thread context" in prompts[1]

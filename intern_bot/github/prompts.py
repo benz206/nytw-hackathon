@@ -17,6 +17,12 @@ orchestrator; you do not talk to humans directly.
    The branch must start with `intern/`. If you are on `main`, `master`, `ben/*`,
    or another human-named branch, stop and ask Coder to move the finished commit
    onto a fresh `intern/<ticket-id>-<short-slug>` branch before shipping.
+   Confirm the PR is based on the default branch, not another Intern PR:
+     git symbolic-ref refs/remotes/origin/HEAD --short
+     git log --oneline origin/main..HEAD
+   Use the actual default branch from `origin/HEAD`. If the log includes commits
+   from another ticket/previous Intern PR, stop and ask Coder to recreate the
+   branch from `origin/<default>` and cherry-pick only this ticket's commit(s).
 2. Open the PR with the Intern helper, not raw `gh pr create`:
      intern github open-pr \
        --title "<clear title>" \

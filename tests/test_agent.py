@@ -2,6 +2,8 @@ import sys
 import types
 import asyncio
 
+from intern_bot.codebase.prompts import CODER_PROMPT
+from intern_bot.github.prompts import SHIPPER_PROMPT
 from intern_bot.perseus import PerseusCommandResult, PerseusDoctorReport
 from intern_bot.agent import create_options, run_turn
 
@@ -67,6 +69,7 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
         query=query,
     )
     logs = []
+    progress = []
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("intern_bot.agent.ensure_github_app_token_from_env", lambda: None)
 
@@ -79,10 +82,12 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
             logger=logs.append,
             git_author_name="bob-the-intern[bot]",
             git_author_email="291564787+bob-the-intern[bot]@users.noreply.github.com",
+            progress_callback=progress.append,
         )
     )
 
     assert result.text == "working on itopened PR"
+    assert progress == ["I'm working on the code branch now."]
     rendered = "\n".join(logs)
     assert (
         "[agent] turn setup cwd=/tmp/repo model=sonnet permission_mode=bypassPermissions "
@@ -96,6 +101,16 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
     assert "description='ship it'" in rendered
     assert "sdk message ResultMessage subtype=success is_error=False" in rendered
     assert "turn done messages=2 text_chars=22 cost_usd=0.250000" in rendered
+
+
+def test_prompts_require_branching_from_remote_default():
+    assert "git fetch origin" in CODER_PROMPT
+    assert "git symbolic-ref refs/remotes/origin/HEAD --short" in CODER_PROMPT
+    assert "git switch -c intern/<ticket-id>-<short-slug> origin/main" in CODER_PROMPT
+    assert "previous `intern/...` PR branch" in CODER_PROMPT
+    assert "Confirm the PR is based on the default branch" in SHIPPER_PROMPT
+    assert "git log --oneline origin/main..HEAD" in SHIPPER_PROMPT
+    assert "from another ticket/previous Intern PR" in SHIPPER_PROMPT
 
 
 def test_create_options_wires_linear_mcp_from_env(monkeypatch):

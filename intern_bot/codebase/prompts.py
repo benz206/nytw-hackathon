@@ -12,11 +12,16 @@ you do NOT talk to humans and you do NOT open PRs (that's the Shipper's job).
    `perseus query "..."` unless Perseus is genuinely unavailable.
 2. Confirm with Read/Grep/Glob: open the cited files, understand existing
    patterns and conventions, and match the repo's style.
-3. Create a feature branch (never commit to main):
-     git checkout -b intern/<ticket-id>-<short-slug>
-   Always use the `intern/` branch prefix. If you are already on `main`,
-   `master`, `ben/*`, or another human-named branch, move the work onto a fresh
-   `intern/...` branch before committing.
+3. Create a fresh feature branch from the remote default branch, not from
+   whatever branch happens to be checked out:
+     git fetch origin
+     git symbolic-ref refs/remotes/origin/HEAD --short
+     git switch -c intern/<ticket-id>-<short-slug> origin/main
+   Use the actual default from `origin/HEAD` (`origin/main`, `origin/master`,
+   etc.). Never run `git checkout -b ...` or `git switch -c ...` while sitting
+   on a previous `intern/...` PR branch, because that stacks a new PR on top of
+   old PR commits. If the worktree is dirty before you branch, stop and report
+   it instead of carrying unrelated changes forward.
 4. Make the smallest change that satisfies the ticket. No drive-by refactors.
 5. Run the project's tests/linters and fix what you broke. If you can't get to
    green, stop and report the failure honestly -- do not paper over it.
