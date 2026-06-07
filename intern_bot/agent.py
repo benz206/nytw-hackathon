@@ -10,6 +10,7 @@ from .github.app_auth import ensure_github_app_token_from_env
 from .github import DEFAULT_SHIPPER_TOOLS, SHIPPER_PROMPT
 from .linear import DEFAULT_PLANNER_TOOLS, LinearConfig, PLANNER_PROMPT
 from .merge_guard import block_merges
+from .perseus import check_perseus
 from .slack import ORCHESTRATOR_PROMPT, ORCHESTRATOR_TOOLS
 
 Logger = Callable[[str], None]
@@ -32,6 +33,8 @@ def create_options(
     shipper_tools: list[str] | None = None,
     stderr: Logger | None = None,
     permission_mode: str | None = "bypassPermissions",
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
 ) -> Any:
     """Create Claude Agent SDK options lazily so tests don't require the SDK."""
     try:
@@ -64,7 +67,7 @@ def create_options(
             ),
             "coder": AgentDefinition(
                 description="Writes and tests code on a feature branch after orienting with Perseus.",
-                prompt=CODER_PROMPT,
+                prompt=CODER_PROMPT + _perseus_runtime_prompt(cwd),
                 tools=coder_tools if coder_tools is not None else DEFAULT_CODER_TOOLS,
             ),
             "shipper": AgentDefinition(
@@ -83,6 +86,9 @@ def create_options(
         kwargs["model"] = model
     if permission_mode:
         kwargs["permission_mode"] = permission_mode
+    git_env = _git_identity_env(name=git_author_name, email=git_author_email)
+    if git_env:
+        kwargs["env"] = git_env
     if effective_mcp_servers:
         kwargs["mcp_servers"] = effective_mcp_servers
     if stderr:
@@ -112,6 +118,49 @@ def _linear_policy_prompt(linear_config: LinearConfig) -> str:
     )
 
 
+def _perseus_runtime_prompt(cwd: str | None) -> str:
+    if not cwd:
+        return ""
+
+    report = check_perseus(
+        cwd=cwd,
+        run_doctor=False,
+        run_query_probe=True,
+        timeout_seconds=15,
+    )
+    lines = ["\n\n## Runtime Perseus status"]
+    if report.executable is None:
+        lines.append(
+            "- Perseus CLI is not installed on PATH. Mark "
+            "`perseus: unavailable (missing CLI)` and use normal repo tools."
+        )
+        return "\n".join(lines) + "\n"
+
+    lines.append(f"- Perseus executable: {report.executable}.")
+    lines.append(f"- Perseus token: {'found' if report.token_exists else 'missing'} at {report.token_path}.")
+    if report.query_available:
+        lines.append(
+            "- Perseus query is available for this repo. Use `perseus query \"...\"` "
+            "before broad Read/Grep/Glob orientation."
+        )
+        if report.index_status is not None and not report.index_status.ok:
+            lines.append(
+                "- `perseus index --status` reported not ready, but the query probe "
+                "works; trust query availability for orientation."
+            )
+    else:
+        reason = "unknown"
+        for result in (report.query_probe, report.index_status, report.version):
+            if result is not None and not result.ok and result.output:
+                reason = result.output.splitlines()[0]
+                break
+        lines.append(
+            f"- Perseus query was not confirmed before this turn: {reason}. Try one "
+            "`perseus query` for non-trivial work, then fall back if it fails."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _dedupe(values: list[str]) -> list[str]:
     seen = set()
     result = []
@@ -123,6 +172,20 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
+def _git_identity_env(*, name: str | None, email: str | None) -> dict[str, str]:
+    if not name and not email:
+        return {}
+    env: dict[str, str] = {}
+    if name:
+        env["GIT_AUTHOR_NAME"] = name
+        env["GIT_COMMITTER_NAME"] = name
+    if email:
+        env["GIT_AUTHOR_EMAIL"] = email
+        env["GIT_COMMITTER_EMAIL"] = email
+        env["EMAIL"] = email
+    return env
+
+
 async def run_turn(
     prompt: str,
     *,
@@ -131,6 +194,8 @@ async def run_turn(
     model: str | None = None,
     logger: Logger | None = None,
     permission_mode: str | None = "bypassPermissions",
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
 ) -> TurnResult:
     """Run one orchestrator turn and collect a human-postable result."""
     try:
@@ -141,7 +206,10 @@ async def run_turn(
         ) from exc
 
     if logger is not None:
-        logger(f"[agent] turn setup cwd={cwd or '-'} model={model or '-'} permission_mode={permission_mode or '-'}")
+        logger(
+            f"[agent] turn setup cwd={cwd or '-'} model={model or '-'} "
+            f"permission_mode={permission_mode or '-'} git_author={git_author_name or '-'}"
+        )
     ensure_github_app_token_from_env()
     if logger is not None:
         logger("[agent] github app token ready")
@@ -150,6 +218,8 @@ async def run_turn(
         model=model,
         stderr=logger,
         permission_mode=permission_mode,
+        git_author_name=git_author_name,
+        git_author_email=git_author_email,
     )
     result = TurnResult()
 
@@ -245,7 +315,18 @@ def _content_block_summary(block: Any, text_block_type: Any) -> str:
         tool_name = getattr(block, "name", None)
         tool_input = getattr(block, "input", None)
         input_keys = sorted(tool_input.keys()) if isinstance(tool_input, dict) else []
-        return f"tool_use name={tool_name} input_keys={input_keys}"
+        detail = ""
+        if tool_name == "Agent" and isinstance(tool_input, dict):
+            bits = []
+            subagent_type = tool_input.get("subagent_type")
+            description = tool_input.get("description")
+            if isinstance(subagent_type, str):
+                bits.append(f"subagent_type={subagent_type}")
+            if isinstance(description, str):
+                bits.append(f"description={_one_line(description, limit=120)!r}")
+            if bits:
+                detail = " " + " ".join(bits)
+        return f"tool_use name={tool_name} input_keys={input_keys}{detail}"
     if name in {"ToolResultBlock", "ServerToolResultBlock"} or hasattr(block, "tool_use_id"):
         content = getattr(block, "content", None)
         return (

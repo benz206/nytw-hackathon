@@ -29,6 +29,7 @@ def open_pull_request(
     notes: str | None = None,
     base: str | None = None,
     branch: str | None = None,
+    required_branch_prefix: str | None = "intern/",
     remote: str = "origin",
     draft: bool = True,
 ) -> OpenPrResult:
@@ -44,6 +45,11 @@ def open_pull_request(
         raise RuntimeError("Current checkout is detached; check out a named feature branch before opening a PR.")
     if current_branch in {"main", "master"}:
         raise RuntimeError(f"Refusing to open a PR directly from {current_branch}. Create a feature branch first.")
+    if required_branch_prefix and not current_branch.startswith(required_branch_prefix):
+        raise RuntimeError(
+            f"Refusing to open an Intern PR from `{current_branch}`. "
+            f"Create a branch starting with `{required_branch_prefix}` first."
+        )
 
     base_branch = base or _default_base_branch(cwd=repo, remote=remote, env=env)
     _git(["push", "-u", remote, current_branch], cwd=repo, env=env)

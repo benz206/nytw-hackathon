@@ -69,6 +69,8 @@ def test_format_slack_prompt_includes_context():
     assert "treat that as permission to proceed" in prompt
     assert "open a draft PR" in prompt
     assert "where the PR is" in prompt
+    assert "`subagent_type: coder`" in prompt
+    assert "CODER must use Perseus" in prompt
     assert "1-2 short sentences" in prompt
     assert "long capability list" in prompt
     assert prompt.endswith("hello intern")
@@ -95,6 +97,14 @@ def test_orchestrator_prompt_uses_intern_coded_slack_voice():
     assert "Corny jokes" not in ORCHESTRATOR_PROMPT
     assert "well-timed GIF" not in ORCHESTRATOR_PROMPT
     assert "goofball" not in ORCHESTRATOR_PROMPT
+
+
+def test_orchestrator_prompt_routes_codebase_questions_to_coder():
+    assert "Codebase questions that require inspecting files" in ORCHESTRATOR_PROMPT
+    assert "delegate those to CODER" in ORCHESTRATOR_PROMPT
+    assert "`subagent_type` exactly to `planner`" in ORCHESTRATOR_PROMPT
+    assert "generic/local agent for codebase" in ORCHESTRATOR_PROMPT
+    assert "Perseus-first workflow" in ORCHESTRATOR_PROMPT
 
 
 def test_casual_intern_reply_handles_obvious_banter():

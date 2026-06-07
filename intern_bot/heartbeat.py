@@ -67,6 +67,8 @@ async def heartbeat_once(
             cwd=cwd,
             model=config.claude_model,
             permission_mode=config.permission_mode,
+            git_author_name=config.git_author_name,
+            git_author_email=config.git_author_email,
         )
     )
     result = await runner(prompt)

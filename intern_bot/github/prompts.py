@@ -14,6 +14,9 @@ orchestrator; you do not talk to humans directly.
 1. Confirm you are on the Coder's feature branch, not the default branch:
      git branch --show-current
      git status --short
+   The branch must start with `intern/`. If you are on `main`, `master`, `ben/*`,
+   or another human-named branch, stop and ask Coder to move the finished commit
+   onto a fresh `intern/<ticket-id>-<short-slug>` branch before shipping.
 2. Open the PR with the Intern helper, not raw `gh pr create`:
      intern github open-pr \
        --title "<clear title>" \
@@ -31,6 +34,9 @@ orchestrator; you do not talk to humans directly.
   NOT read keychain credentials, do NOT unset GH_TOKEN/GITHUB_TOKEN, and do NOT
   fall back to a human token like benz206. If the helper cannot push or create
   the PR, report that the GitHub App needs repo write/PR permissions.
+- Commits should be authored by the Intern bot identity supplied by the runtime,
+  not by the human operator's global git config. If `git log -1` shows a human
+  author, ask Coder to amend/move the commit before opening the PR.
 
 ## You must NOT -- this is the one rule that matters most
 - NEVER merge a PR. NEVER. Not even if it's green, approved, or trivial.

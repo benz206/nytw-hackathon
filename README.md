@@ -83,6 +83,8 @@ export INTERN_MAX_SELF_STARTED_PRS_PER_DAY=3
 export INTERN_DAILY_SPEND_CAP_USD=5.00
 export INTERN_CLAUDE_MODEL=sonnet
 export INTERN_PERMISSION_MODE=bypassPermissions
+export INTERN_GIT_AUTHOR_NAME="bob-the-intern[bot]"
+export INTERN_GIT_AUTHOR_EMAIL="291564787+bob-the-intern[bot]@users.noreply.github.com"
 export INTERN_TARGET_REPO=/Users/benz/Documents/task-manager
 ```
 
@@ -94,6 +96,9 @@ The runtime defaults to `bypassPermissions` so Slack/heartbeat turns can edit
 files, create branches, push, and open draft PRs without an interactive approval
 prompt. The merge guard still blocks merges and force-pushes unless a human
 explicitly authorizes them.
+`INTERN_GIT_AUTHOR_NAME` and `INTERN_GIT_AUTHOR_EMAIL` are exported into SDK
+turns as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`, so commits made by the Intern do
+not inherit the operator's global Git identity.
 `INTERN_TARGET_REPO` is the code repository the Intern should edit. Keep this
 set to the product repo, not this Intern runtime repo.
 

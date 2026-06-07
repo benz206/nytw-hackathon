@@ -25,6 +25,8 @@ def _float_env(name: str, default: float) -> float:
 class InternConfig:
     claude_model: str | None = "sonnet"
     permission_mode: str | None = "bypassPermissions"
+    git_author_name: str = "bob-the-intern[bot]"
+    git_author_email: str = "291564787+bob-the-intern[bot]@users.noreply.github.com"
     target_repo_path: Path | None = None
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
@@ -43,6 +45,8 @@ class InternConfig:
         return cls(
             claude_model=os.getenv("INTERN_CLAUDE_MODEL", cls.claude_model) or None,
             permission_mode=os.getenv("INTERN_PERMISSION_MODE", cls.permission_mode) or None,
+            git_author_name=os.getenv("INTERN_GIT_AUTHOR_NAME", cls.git_author_name),
+            git_author_email=os.getenv("INTERN_GIT_AUTHOR_EMAIL", cls.git_author_email),
             target_repo_path=Path(target_repo).expanduser() if target_repo else None,
             heartbeat_seconds=_int_env("INTERN_HEARTBEAT_SECONDS", cls.heartbeat_seconds),
             random_banter_chance=_float_env("INTERN_RANDOM_BANTER_CHANCE", cls.random_banter_chance),

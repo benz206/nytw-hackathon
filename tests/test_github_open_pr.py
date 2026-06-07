@@ -96,6 +96,31 @@ def test_open_pull_request_refuses_main(monkeypatch, tmp_path):
     assert "Refusing to open a PR directly from main" in message
 
 
+def test_open_pull_request_refuses_human_named_branch(monkeypatch, tmp_path):
+    def fake_run(command, *, cwd, env, text, capture_output, check):
+        if command[:3] == ["git", "branch", "--show-current"]:
+            return SimpleNamespace(returncode=0, stdout="ben/tot-12-change\n", stderr="")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(open_pr, "ensure_github_app_token_from_env", lambda force: object())
+    monkeypatch.setattr(open_pr.subprocess, "run", fake_run)
+
+    try:
+        open_pull_request(
+            cwd=tmp_path,
+            title="bad",
+            summary="bad",
+            tests="not run",
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert "Refusing to open an Intern PR from `ben/tot-12-change`" in message
+    assert "intern/" in message
+
+
 def test_open_pull_request_explains_bot_write_permission_failure(monkeypatch, tmp_path):
     def fake_run(command, *, cwd, env, text, capture_output, check):
         if command[:3] == ["git", "branch", "--show-current"]:

@@ -486,6 +486,10 @@ def format_slack_prompt(
         "- If the user asks where the PR is after requesting work in this thread, continue/check the work from "
         "the thread context instead of asking which PR."
     )
+    parts.append(
+        "- If answering requires inspecting the codebase, delegate to the Agent tool with "
+        "`subagent_type: coder`; CODER must use Perseus before broad file search when it can."
+    )
     parts.append("- Keep casual replies to 1-2 short sentences.")
     parts.append("- Do not dump a long capability list or repeat sections unless the user asked for detail.")
     if thread_messages:
@@ -780,6 +784,8 @@ def run_socket_mode(config: SlackConfig) -> None:
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
                     permission_mode=runtime_config.permission_mode,
+                    git_author_name=runtime_config.git_author_name,
+                    git_author_email=runtime_config.git_author_email,
                     logger=_log,
                 ),
                 memory=memory or None,
@@ -818,6 +824,8 @@ def run_socket_mode(config: SlackConfig) -> None:
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
                     permission_mode=runtime_config.permission_mode,
+                    git_author_name=runtime_config.git_author_name,
+                    git_author_email=runtime_config.git_author_email,
                     logger=_log,
                 ),
                 memory=memory or None,

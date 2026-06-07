@@ -38,11 +38,24 @@ class PerseusDoctorReport:
     version: PerseusCommandResult | None = None
     doctor: PerseusCommandResult | None = None
     index_status: PerseusCommandResult | None = None
+    query_probe: PerseusCommandResult | None = None
 
     @property
     def ok(self) -> bool:
-        checks = [self.version, self.doctor, self.index_status]
-        return self.executable is not None and all(check is None or check.ok for check in checks)
+        checks = [self.version, self.doctor]
+        if self.executable is None or not all(check is None or check.ok for check in checks):
+            return False
+
+        readiness_checks = [
+            check for check in (self.index_status, self.query_probe) if check is not None
+        ]
+        return not readiness_checks or any(check.ok for check in readiness_checks)
+
+    @property
+    def query_available(self) -> bool:
+        if self.index_status is not None and self.index_status.ok:
+            return True
+        return self.query_probe is not None and self.query_probe.ok
 
 
 def check_perseus(
@@ -50,6 +63,8 @@ def check_perseus(
     cwd: str | Path | None = None,
     run_doctor: bool = True,
     run_index_status: bool = True,
+    run_query_probe: bool = False,
+    query_probe: str = "where is the main application code?",
     executable: str | None = None,
     timeout_seconds: int = 120,
 ) -> PerseusDoctorReport:
@@ -72,6 +87,11 @@ def check_perseus(
         if run_index_status
         else None
     )
+    probe = (
+        _run((found, "query", query_probe), cwd=cwd, timeout_seconds=timeout_seconds)
+        if run_query_probe and (index_status is None or not index_status.ok)
+        else None
+    )
     return PerseusDoctorReport(
         executable=found,
         token_path=token_path,
@@ -79,6 +99,7 @@ def check_perseus(
         version=version,
         doctor=doctor,
         index_status=index_status,
+        query_probe=probe,
     )
 
 
@@ -102,6 +123,7 @@ def format_perseus_report(report: PerseusDoctorReport) -> str:
         ("version", report.version),
         ("doctor", report.doctor),
         ("index", report.index_status),
+        ("query_probe", report.query_probe),
     ):
         if result is None:
             continue
@@ -112,7 +134,12 @@ def format_perseus_report(report: PerseusDoctorReport) -> str:
 
     if not report.token_exists:
         lines.append("next: run `perseus login` as the operator; do not delegate login to the agent.")
-    if report.index_status is not None and not report.index_status.ok:
+    if report.index_status is not None and not report.index_status.ok and report.query_available:
+        lines.append(
+            "note: `perseus index --status` failed, but `perseus query` works; "
+            "treating Perseus as usable."
+        )
+    elif report.index_status is not None and not report.index_status.ok:
         lines.append("next: run `perseus index` from the repo root, then rerun this check.")
     if report.doctor is None:
         lines.append("note: this Perseus CLI does not expose `perseus doctor`; skipped that check.")

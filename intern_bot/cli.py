@@ -52,6 +52,8 @@ async def _run(args: argparse.Namespace) -> None:
             cwd=_configured_cwd(args.cwd, config),
             model=config.claude_model,
             permission_mode=config.permission_mode,
+            git_author_name=config.git_author_name,
+            git_author_email=config.git_author_email,
             logger=print,
         )
         if result.text.strip():
@@ -83,6 +85,7 @@ async def _run(args: argparse.Namespace) -> None:
             cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
             run_doctor=not args.skip_cli_doctor,
             run_index_status=not args.skip_index_status,
+            run_query_probe=not args.skip_query_probe,
         )
         print(format_perseus_report(report))
         if not report.ok:
@@ -101,7 +104,10 @@ async def _run(args: argparse.Namespace) -> None:
         print(format_github_report(report))
         ok = report.ok
         if args.with_perseus:
-            perseus_report = check_perseus(cwd=_configured_cwd(args.cwd, InternConfig.from_env()))
+            perseus_report = check_perseus(
+                cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
+                run_query_probe=True,
+            )
             print()
             print(format_perseus_report(perseus_report))
             ok = ok and perseus_report.ok
@@ -134,6 +140,7 @@ async def _run(args: argparse.Namespace) -> None:
             notes=args.notes,
             base=args.base,
             branch=args.branch,
+            required_branch_prefix=args.required_branch_prefix,
             draft=not args.ready,
         )
         print(f"pr_url: {result.url}")
@@ -190,6 +197,8 @@ async def _run(args: argparse.Namespace) -> None:
                     cwd=_configured_cwd(args.cwd, runtime_config),
                     model=runtime_config.claude_model,
                     permission_mode=runtime_config.permission_mode,
+                    git_author_name=runtime_config.git_author_name,
+                    git_author_email=runtime_config.git_author_email,
                     logger=print,
                 )
             from .agent import TurnResult
@@ -273,6 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip `perseus index --status`.",
     )
+    doctor.add_argument(
+        "--skip-query-probe",
+        action="store_true",
+        help="Skip the read-only `perseus query` probe used when index status is not ready.",
+    )
 
     github = subparsers.add_parser("github", help="GitHub repo integration helpers.")
     github_subparsers = github.add_subparsers(dest="github_command", required=True)
@@ -315,6 +329,11 @@ def build_parser() -> argparse.ArgumentParser:
     github_open_pr.add_argument("--notes", help="Short reviewer note.")
     github_open_pr.add_argument("--base", help="Base branch. Defaults to origin/HEAD or main.")
     github_open_pr.add_argument("--branch", help="Head branch. Defaults to current branch.")
+    github_open_pr.add_argument(
+        "--required-branch-prefix",
+        default="intern/",
+        help="Require the head branch to start with this prefix. Defaults to intern/.",
+    )
     github_open_pr.add_argument("--ready", action="store_true", help="Open a ready PR instead of a draft PR.")
     github_open_pr.set_defaults(github_command="open-pr")
 
