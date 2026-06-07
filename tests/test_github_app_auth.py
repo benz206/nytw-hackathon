@@ -48,6 +48,10 @@ def test_ensure_github_app_token_exports_minted_token(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(key_path))
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_KEY_0", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_VALUE_0", raising=False)
+    monkeypatch.delenv("GIT_TERMINAL_PROMPT", raising=False)
     monkeypatch.setattr(app_auth, "_CACHED_TOKEN", None)
     monkeypatch.setattr(
         app_auth,
@@ -61,3 +65,32 @@ def test_ensure_github_app_token_exports_minted_token(monkeypatch, tmp_path):
     assert token.token == "ghs_test"
     assert app_auth.os.environ["GH_TOKEN"] == "ghs_test"
     assert app_auth.os.environ["GITHUB_TOKEN"] == "ghs_test"
+    assert app_auth.os.environ["GIT_TERMINAL_PROMPT"] == "0"
+    assert app_auth.os.environ["GIT_CONFIG_COUNT"] == "1"
+    assert app_auth.os.environ["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert app_auth.os.environ["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Z2hzX3Rlc3Q="
+
+
+def test_ensure_github_app_token_updates_existing_git_auth_header(monkeypatch, tmp_path):
+    key_path = tmp_path / "key.pem"
+    key_path.write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_APP_ID", "123")
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(key_path))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Bob")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "AUTHORIZATION: basic old")
+    monkeypatch.setattr(app_auth, "_CACHED_TOKEN", None)
+    monkeypatch.setattr(
+        app_auth,
+        "mint_installation_token",
+        lambda config: GitHubInstallationToken(token="ghs_new", expires_at="2099-01-01T00:00:00Z"),
+    )
+
+    ensure_github_app_token_from_env(force=True)
+
+    assert app_auth.os.environ["GIT_CONFIG_COUNT"] == "2"
+    assert app_auth.os.environ["GIT_CONFIG_VALUE_0"] == "Bob"
+    assert app_auth.os.environ["GIT_CONFIG_VALUE_1"] == "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Z2hzX25ldw=="

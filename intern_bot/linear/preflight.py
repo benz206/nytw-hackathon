@@ -137,7 +137,7 @@ class LinearMcpToolReport:
 
     @property
     def recommended_planner_tools(self) -> tuple[str, ...]:
-        return tuple(tool for tool in self.tools if tool in RECOMMENDED_LINEAR_PLANNER_TOOLS)
+        return tuple(_sdk_tool_name(self.server_name, tool) for tool in self.tools if tool in RECOMMENDED_LINEAR_PLANNER_TOOLS)
 
 
 async def discover_linear_mcp_tools(
@@ -319,3 +319,9 @@ def _write_env_value(env_path: Path, key: str, value: str) -> None:
     if not replaced:
         output.append(line)
     env_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def _sdk_tool_name(server_name: str, tool_name: str) -> str:
+    if tool_name.startswith("mcp__"):
+        return tool_name
+    return f"mcp__{server_name}__{tool_name}"

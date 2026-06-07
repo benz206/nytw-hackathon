@@ -12,7 +12,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Awaitable, Callable, Iterator, Protocol
+from typing import Any, Awaitable, Callable, Iterator, Protocol, Sequence
 from urllib import error, request
 
 from intern_bot.agent import TurnResult, run_turn
@@ -38,6 +38,11 @@ class ActivityIndicator(Protocol):
 
     async def stop_typing(self, *, channel: str, thread_ts: str) -> None:
         """Clear a Slack assistant typing/status indicator."""
+
+
+class ThreadHistoryProvider(Protocol):
+    async def fetch_thread_messages(self, *, channel: str, thread_ts: str, limit: int = 20) -> Sequence[dict[str, Any]]:
+        """Fetch recent Slack thread messages, oldest to newest."""
 
 
 Logger = Callable[[str], None]
@@ -207,6 +212,7 @@ async def handle_slack_text(
     typing_thread_ts: str | None = None,
     poster: Poster,
     activity: ActivityIndicator | None = None,
+    thread_history: ThreadHistoryProvider | None = None,
     runner: Runner | None = None,
     memory: InternMemory | None = None,
     logger: Logger | None = None,
@@ -225,15 +231,28 @@ async def handle_slack_text(
             )
         )
 
+    thread_messages = await _fetch_thread_history(
+        thread_history,
+        channel=channel,
+        thread_ts=thread_ts,
+        logger=logger,
+    )
+
     casual_reply = casual_intern_reply(text)
-    if casual_reply:
+    if casual_reply and not _thread_has_work_context(thread_messages):
         result = TurnResult(text=casual_reply)
         await poster.post_message(casual_reply, channel=channel, thread_ts=thread_ts)
         if memory is not None:
             memory.append_event("slack_banter", _one_line(text))
         return result
 
-    prompt = format_slack_prompt(text, channel=channel, user=user, thread_ts=thread_ts)
+    prompt = format_slack_prompt(
+        text,
+        channel=channel,
+        user=user,
+        thread_ts=thread_ts,
+        thread_messages=thread_messages,
+    )
     status_thread_ts = typing_thread_ts or thread_ts
     activity = activity or poster if _supports_activity(poster) else activity
     if activity is not None:
@@ -242,6 +261,13 @@ async def handle_slack_text(
         await _best_effort_activity(
             activity.start_typing(channel=channel, thread_ts=status_thread_ts),
             logger=logger,
+        )
+
+    if _should_send_work_ack(text, thread_messages):
+        await poster.post_message(
+            _work_ack_text(text, thread_messages),
+            channel=channel,
+            thread_ts=thread_ts,
         )
 
     try:
@@ -289,6 +315,7 @@ def format_slack_prompt(
     channel: str,
     user: str | None = None,
     thread_ts: str | None = None,
+    thread_messages: Sequence[dict[str, Any]] | None = None,
 ) -> str:
     parts = [f"Slack channel: {channel}"]
     if user:
@@ -308,8 +335,24 @@ def format_slack_prompt(
     )
     parts.append("- If asked what you can do, do a joking shrug first, then name the useful work in one line.")
     parts.append("- If scoping a small ticket, give the read in one short paragraph with at most one tiny question.")
+    parts.append(
+        "- If the thread context already contains a concrete small code/PR request and the latest user message is "
+        "affirming it (yes, ya, yep, do it, sounds good), treat that as permission to proceed."
+    )
+    parts.append(
+        "- For obvious tiny repo tasks like a README text change, do not keep asking for more context; make a "
+        "reasonable small change, then open a draft PR."
+    )
+    parts.append(
+        "- If the user asks where the PR is after requesting work in this thread, continue/check the work from "
+        "the thread context instead of asking which PR."
+    )
     parts.append("- Keep casual replies to 1-2 short sentences.")
     parts.append("- Do not dump a long capability list or repeat sections unless the user asked for detail.")
+    if thread_messages:
+        parts.append("")
+        parts.append("Recent Slack thread context (oldest to newest):")
+        parts.extend(_format_thread_messages(thread_messages))
     parts.append("")
     parts.append("User message:")
     parts.append(text)
@@ -332,6 +375,72 @@ def casual_intern_reply(text: str) -> str | None:
         return "uhhh mb guys\nI can look, but I am not touching prod without on-call"
 
     return None
+
+
+def _thread_has_work_context(thread_messages: Sequence[dict[str, Any]]) -> bool:
+    return _looks_like_work_request(_thread_text(thread_messages))
+
+
+def _should_send_work_ack(text: str, thread_messages: Sequence[dict[str, Any]]) -> bool:
+    normalized = _normalize_casual_text(text)
+    if _looks_like_pr_status_question(normalized):
+        return False
+    if _looks_like_work_request(text):
+        return True
+    if normalized in {"yes", "yeah", "yep", "ya", "ya bro", "yes bro", "sure", "do it", "go for it"}:
+        return _thread_has_work_context(thread_messages)
+    return False
+
+
+def _work_ack_text(text: str, thread_messages: Sequence[dict[str, Any]]) -> str:
+    combined = f"{_thread_text(thread_messages)}\n{text}".lower()
+    if "pr" in combined or "pull request" in combined:
+        return "on it, I'll make the change and open a draft PR"
+    return "on it, I'll work it and report back here"
+
+
+def _looks_like_pr_status_question(normalized: str) -> bool:
+    return bool(re.search(r"\b(where|wheres|where is|status|link)\b.*\b(pr|pull request)\b", normalized))
+
+
+def _looks_like_work_request(text: str) -> bool:
+    normalized = _normalize_casual_text(text)
+    return bool(
+        re.search(r"\b(open|create|make|raise)\b.*\b(pr|pull request)\b", normalized)
+        or re.search(r"\b(add|change|update|fix|implement|edit)\b.*\b(readme|file|code|test|bug|ticket)\b", normalized)
+        or re.search(r"\b(readme|repo|branch|commit)\b.*\b(change|update|fix|pr|pull request)\b", normalized)
+    )
+
+
+async def _fetch_thread_history(
+    provider: ThreadHistoryProvider | None,
+    *,
+    channel: str,
+    thread_ts: str | None,
+    logger: Logger | None,
+) -> Sequence[dict[str, Any]]:
+    if provider is None or not thread_ts:
+        return ()
+    try:
+        return await provider.fetch_thread_messages(channel=channel, thread_ts=thread_ts)
+    except Exception as exc:
+        if logger is not None:
+            logger(f"[slack] thread history warning: {_one_line(str(exc), limit=240)}")
+        return ()
+
+
+def _format_thread_messages(messages: Sequence[dict[str, Any]]) -> list[str]:
+    return [f"- {_format_thread_message(message)}" for message in messages[-20:]]
+
+
+def _format_thread_message(message: dict[str, Any]) -> str:
+    speaker = "Intern" if message.get("bot_id") or message.get("bot_profile") else str(message.get("user") or "user")
+    text = _one_line(str(message.get("text") or ""), limit=500)
+    return f"{speaker}: {text}"
+
+
+def _thread_text(messages: Sequence[dict[str, Any]]) -> str:
+    return "\n".join(str(message.get("text") or "") for message in messages)
 
 
 def _normalize_casual_text(text: str) -> str:
@@ -380,6 +489,7 @@ def run_socket_mode(config: SlackConfig) -> None:
     target_cwd = str(runtime_config.target_repo_path) if runtime_config.target_repo_path else None
     memory = InternMemory(runtime_config.memory_path)
     activity = _BoltActivity(app.client)
+    thread_history = _BoltThreadHistory(app.client)
 
     _log("starting Slack Socket Mode listener")
     _best_effort_sync_activity(lambda: app.client.users_setPresence(presence="auto"), logger=_log)
@@ -405,6 +515,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 typing_thread_ts=thread_ts,
                 poster=_FunctionPoster(post),
                 activity=activity,
+                thread_history=thread_history,
                 runner=lambda prompt: run_turn(
                     prompt,
                     cwd=target_cwd,
@@ -439,6 +550,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 typing_thread_ts=typing_thread_ts,
                 poster=_FunctionPoster(post),
                 activity=activity,
+                thread_history=thread_history,
                 runner=lambda prompt: run_turn(
                     prompt,
                     cwd=target_cwd,
@@ -550,6 +662,29 @@ class _BoltActivity:
             "assistant.threads.setStatus",
             json={"channel_id": channel, "thread_ts": thread_ts, "status": ""},
         )
+
+
+class _BoltThreadHistory:
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def fetch_thread_messages(
+        self,
+        *,
+        channel: str,
+        thread_ts: str,
+        limit: int = 20,
+    ) -> Sequence[dict[str, Any]]:
+        result = await asyncio.to_thread(
+            self._client.conversations_replies,
+            channel=channel,
+            ts=thread_ts,
+            limit=limit,
+        )
+        if not isinstance(result, dict) or not result.get("ok", True):
+            raise RuntimeError(f"Slack thread fetch failed: {result.get('error', 'unknown_error')}")
+        messages = result.get("messages") or ()
+        return tuple(message for message in messages if isinstance(message, dict))
 
 
 async def _best_effort_activity(awaitable: Awaitable[Any], *, logger: Logger | None = None) -> None:

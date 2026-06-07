@@ -135,6 +135,28 @@ def generate_app_jwt(config: GitHubAppConfig, *, now: int | None = None) -> str:
 def _export_token(token: str) -> None:
     os.environ["GH_TOKEN"] = token
     os.environ["GITHUB_TOKEN"] = token
+    os.environ["GIT_TERMINAL_PROMPT"] = "0"
+    _export_git_auth_header(token)
+
+
+def _export_git_auth_header(token: str) -> None:
+    """Let child-process `git push` use the app token without writing credentials."""
+    key = "http.https://github.com/.extraheader"
+    basic_token = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    value = f"AUTHORIZATION: basic {basic_token}"
+    try:
+        count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+
+    for index in range(count):
+        if os.environ.get(f"GIT_CONFIG_KEY_{index}") == key:
+            os.environ[f"GIT_CONFIG_VALUE_{index}"] = value
+            return
+
+    os.environ["GIT_CONFIG_COUNT"] = str(count + 1)
+    os.environ[f"GIT_CONFIG_KEY_{count}"] = key
+    os.environ[f"GIT_CONFIG_VALUE_{count}"] = value
 
 
 def _openssl_sign(data: bytes, private_key_path: Path) -> bytes:

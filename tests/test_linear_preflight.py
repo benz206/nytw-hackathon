@@ -1,5 +1,6 @@
 from intern_bot.linear import LinearConfig
 from intern_bot.linear.preflight import (
+    LinearMcpToolReport,
     check_linear_setup,
     format_linear_report,
     write_linear_planner_tools_env,
@@ -102,4 +103,17 @@ def test_write_linear_planner_tools_env_replaces_existing_key(tmp_path):
     assert env_file.read_text(encoding="utf-8") == (
         "INTERN_LINEAR_PLANNER_TOOLS=mcp__linear__list_issues,mcp__linear__update_issue\n"
         "OTHER=value\n"
+    )
+
+
+def test_linear_tool_report_recommends_sdk_tool_names():
+    report = LinearMcpToolReport(
+        server_name="linear",
+        status="connected",
+        tools=("get_issue", "delete_comment", "list_issues"),
+    )
+
+    assert report.recommended_planner_tools == (
+        "mcp__linear__get_issue",
+        "mcp__linear__list_issues",
     )

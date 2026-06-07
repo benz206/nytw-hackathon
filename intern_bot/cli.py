@@ -83,6 +83,8 @@ async def _run(args: argparse.Namespace) -> None:
         return
 
     if args.command == "github" and args.github_command == "doctor":
+        if args.require_app:
+            ensure_github_app_token_from_env()
         report = check_github_repo(
             cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
             remote=args.remote,

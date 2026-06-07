@@ -46,14 +46,15 @@ def create_options(
         else list(linear_config.planner_tools or DEFAULT_PLANNER_TOOLS)
     )
     planner_mcp_servers = [linear_config.mcp_server_name] if effective_mcp_servers else None
+    allowed_tools = _dedupe([*ORCHESTRATOR_TOOLS, *effective_planner_tools])
 
     kwargs: dict[str, Any] = {
         "system_prompt": ORCHESTRATOR_PROMPT,
-        "allowed_tools": ORCHESTRATOR_TOOLS,
+        "allowed_tools": allowed_tools,
         "agents": {
             "planner": AgentDefinition(
                 description="Reads/writes/triages Linear tickets and plans intern-safe work.",
-                prompt=PLANNER_PROMPT,
+                prompt=PLANNER_PROMPT + _linear_policy_prompt(linear_config),
                 tools=effective_planner_tools,
                 mcpServers=planner_mcp_servers,
             ),
@@ -86,6 +87,32 @@ def _default_mcp_servers(linear_config: LinearConfig) -> dict[str, Any]:
     if not linear_config.has_team_allowlist:
         return {}
     return {linear_config.mcp_server_name: linear_config.mcp_server_config()}
+
+
+def _linear_policy_prompt(linear_config: LinearConfig) -> str:
+    if not linear_config.has_team_allowlist:
+        return ""
+    return (
+        "\n\n## Runtime Linear policy\n"
+        f"- Allowed Linear team keys: {', '.join(linear_config.team_keys)}.\n"
+        f"- Allowed starting statuses: {', '.join(linear_config.allowed_statuses)}.\n"
+        f"- Move started work to: {linear_config.in_progress_status}.\n"
+        f"- Use blocked status for blockers: {linear_config.blocked_status}.\n"
+        f"- Maximum self-start estimate: {linear_config.max_estimate}.\n"
+        "- When creating, searching, or updating issues, stay inside the allowed team keys. "
+        "If a user asks for a ticket in a different key or the tool default would create one elsewhere, stop and ask.\n"
+    )
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 async def run_turn(

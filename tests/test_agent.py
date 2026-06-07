@@ -72,3 +72,5 @@ def test_create_options_wires_linear_mcp_from_env(monkeypatch):
     }
     assert captured["agents"]["planner"].tools == ["mcp__linear__list_issues"]
     assert captured["agents"]["planner"].mcpServers == ["linear"]
+    assert captured["allowed_tools"] == ["Agent", "mcp__linear__list_issues"]
+    assert "Allowed Linear team keys: TOT" in captured["agents"]["planner"].prompt

@@ -39,11 +39,23 @@ def test_slack_config_reports_missing_runtime_tokens():
 
 
 def test_format_slack_prompt_includes_context():
-    prompt = format_slack_prompt("hello intern", channel="C123", user="U123", thread_ts="123.456")
+    prompt = format_slack_prompt(
+        "hello intern",
+        channel="C123",
+        user="U123",
+        thread_ts="123.456",
+        thread_messages=[
+            {"user": "U123", "text": "<@B123> open a pr for a simple readme change"},
+            {"bot_id": "B123", "text": "what change do you want in the readme?"},
+        ],
+    )
 
     assert "Slack channel: C123" in prompt
     assert "Slack user: U123" in prompt
     assert "Slack thread_ts: 123.456" in prompt
+    assert "Recent Slack thread context (oldest to newest):" in prompt
+    assert "- U123: <@B123> open a pr for a simple readme change" in prompt
+    assert "- Intern: what change do you want in the readme?" in prompt
     assert "Answer the latest user message directly." in prompt
     assert "barely-trained intern in Slack" in prompt
     assert "One Slack bubble" in prompt
@@ -52,6 +64,9 @@ def test_format_slack_prompt_includes_context():
     assert "pick a concrete answer" in prompt
     assert "joking shrug" in prompt
     assert "one short paragraph with at most one tiny question" in prompt
+    assert "treat that as permission to proceed" in prompt
+    assert "open a draft PR" in prompt
+    assert "where the PR is" in prompt
     assert "1-2 short sentences" in prompt
     assert "long capability list" in prompt
     assert prompt.endswith("hello intern")
@@ -122,6 +137,82 @@ def test_handle_slack_text_runs_runner_and_posts(capsys):
 
     captured = capsys.readouterr()
     assert "hello from intern" in captured.out
+
+
+def test_handle_slack_text_posts_work_ack_before_runner():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append((text, channel, thread_ts))
+
+    async def runner(prompt: str) -> TurnResult:
+        assert "open a pr for a simple readme change" in prompt
+        return TurnResult(text="opened it: https://github.com/example/repo/pull/1")
+
+    poster = RecordingPoster()
+
+    result = asyncio.run(
+        handle_slack_text(
+            "<@U123> open a pr for a simple readme change please",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            poster=poster,
+            runner=runner,
+        )
+    )
+
+    assert result.text == "opened it: https://github.com/example/repo/pull/1"
+    assert poster.messages == [
+        ("on it, I'll make the change and open a draft PR", "C123", "111.222"),
+        ("opened it: https://github.com/example/repo/pull/1", "C123", "111.222"),
+    ]
+
+
+def test_handle_slack_text_uses_thread_context_for_affirmation():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append(text)
+
+    class ThreadHistory:
+        async def fetch_thread_messages(self, *, channel: str, thread_ts: str, limit: int = 20):
+            return (
+                {"user": "U123", "text": "<@B123> open a pr for a simple readme change please"},
+                {"bot_id": "B123", "text": "what change do you want in the readme?"},
+                {"user": "U123", "text": "just like add ur name or msth"},
+                {"bot_id": "B123", "text": "add my name where lol? like a file, a README, contributors list?"},
+            )
+
+    async def runner(prompt: str) -> TurnResult:
+        assert "Recent Slack thread context" in prompt
+        assert "just like add ur name or msth" in prompt
+        assert "User message:\nya bro" in prompt
+        return TurnResult(text="done, opened https://github.com/example/repo/pull/2")
+
+    poster = RecordingPoster()
+
+    result = asyncio.run(
+        handle_slack_text(
+            "ya bro",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            poster=poster,
+            thread_history=ThreadHistory(),
+            runner=runner,
+        )
+    )
+
+    assert result.text == "done, opened https://github.com/example/repo/pull/2"
+    assert poster.messages == [
+        "on it, I'll make the change and open a draft PR",
+        "done, opened https://github.com/example/repo/pull/2",
+    ]
 
 
 def test_handle_slack_text_posts_fast_banter_without_runner(capsys):
