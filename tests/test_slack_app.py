@@ -10,6 +10,8 @@ from intern_bot.slack.app import (
     PrintPoster,
     SlackConfig,
     SlackEnvCheck,
+    SlackThreadContext,
+    _BoltThreadHistory,
     _create_single_workspace_bolt_app,
     casual_intern_reply,
     format_slack_prompt,
@@ -213,6 +215,150 @@ def test_handle_slack_text_uses_thread_context_for_affirmation():
         "on it, I'll make the change and open a draft PR",
         "done, opened https://github.com/example/repo/pull/2",
     ]
+
+
+def test_handle_slack_text_uses_local_thread_cache_when_history_is_missing():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append(text)
+
+    prompts = []
+
+    async def first_runner(prompt: str) -> TurnResult:
+        prompts.append(prompt)
+        return TurnResult(
+            text=(
+                'TOT-12 is "Add the Intern (Claude) to contributors" -- basically add me '
+                "to the contributors list. want me to just take it?"
+            )
+        )
+
+    async def second_runner(prompt: str) -> TurnResult:
+        prompts.append(prompt)
+        assert "TOT-12" in prompt
+        assert "Add the Intern (Claude) to contributors" in prompt
+        assert "User message:\nya can u fix those changes and open the p" in prompt
+        return TurnResult(text="on it, opened https://github.com/example/repo/pull/12")
+
+    poster = RecordingPoster()
+    context = SlackThreadContext()
+
+    asyncio.run(
+        handle_slack_text(
+            "<@B123> whats tot12 ticket on linear",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            event_ts="111.222",
+            poster=poster,
+            thread_context=context,
+            runner=first_runner,
+        )
+    )
+    result = asyncio.run(
+        handle_slack_text(
+            "ya can u fix those changes and open the p",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            event_ts="222.333",
+            poster=poster,
+            thread_context=context,
+            runner=second_runner,
+        )
+    )
+
+    assert result.text == "on it, opened https://github.com/example/repo/pull/12"
+    assert poster.messages == [
+        'TOT-12 is "Add the Intern (Claude) to contributors" -- basically add me to the contributors list. want me to just take it?',
+        "on it, I'll make the change and open a draft PR",
+        "on it, opened https://github.com/example/repo/pull/12",
+    ]
+    assert "Recent Slack thread context" in prompts[1]
+
+
+def test_handle_slack_text_logs_thread_context_sources(capsys):
+    async def runner(prompt: str) -> TurnResult:
+        return TurnResult(text="reply", total_cost_usd=0.02)
+
+    context = SlackThreadContext()
+
+    asyncio.run(
+        handle_slack_text(
+            "please check the repo status",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            event_ts="222.333",
+            poster=PrintPoster(),
+            thread_context=context,
+            runner=runner,
+            logger=print,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert "thread history skipped source=slack reason=no_provider" in captured.out
+    assert "thread context source=cache count=0" in captured.out
+    assert "thread context append source=cache speaker=user" in captured.out
+    assert "thread context merged channel=C123 thread_ts=111.222 context_messages=1" in captured.out
+    assert "agent turn start channel=C123 thread_ts=111.222 context_messages=1" in captured.out
+    assert "agent turn complete channel=C123 thread_ts=111.222 reply_chars=5 cost_usd=0.020000" in captured.out
+
+
+def test_bolt_thread_history_accepts_slack_response_like_result():
+    class SlackResponseLike:
+        data = {
+            "ok": True,
+            "messages": (
+                {"user": "U123", "text": "hi"},
+                {"not": "a real message"},
+                "ignore me",
+            ),
+        }
+
+    class Client:
+        def conversations_replies(self, *, channel: str, ts: str, limit: int):
+            assert channel == "C123"
+            assert ts == "111.222"
+            assert limit == 20
+            return SlackResponseLike()
+
+    result = asyncio.run(
+        _BoltThreadHistory(Client()).fetch_thread_messages(
+            channel="C123",
+            thread_ts="111.222",
+        )
+    )
+
+    assert result == (
+        {"user": "U123", "text": "hi"},
+        {"not": "a real message"},
+    )
+
+
+def test_bolt_thread_history_reports_real_slack_error():
+    class Client:
+        def conversations_replies(self, *, channel: str, ts: str, limit: int):
+            return {"ok": False, "error": "missing_scope"}
+
+    try:
+        asyncio.run(
+            _BoltThreadHistory(Client()).fetch_thread_messages(
+                channel="C123",
+                thread_ts="111.222",
+            )
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert "error=missing_scope" in message
+    assert "check bot scopes" in message
 
 
 def test_handle_slack_text_posts_fast_banter_without_runner(capsys):

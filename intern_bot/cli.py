@@ -14,6 +14,7 @@ from .github import (
     ensure_github_app_token_from_env,
     format_github_app_report,
     format_github_report,
+    open_pull_request,
 )
 from .heartbeat import heartbeat_loop, heartbeat_once
 from .linear import (
@@ -46,7 +47,13 @@ async def _run(args: argparse.Namespace) -> None:
         config = InternConfig.from_env()
         memory = InternMemory(config.memory_path)
         memory.ensure_exists()
-        result = await run_turn(args.prompt, cwd=_configured_cwd(args.cwd, config), model=config.claude_model)
+        result = await run_turn(
+            args.prompt,
+            cwd=_configured_cwd(args.cwd, config),
+            model=config.claude_model,
+            permission_mode=config.permission_mode,
+            logger=print,
+        )
         if result.text.strip():
             print(result.text.strip())
         memory.append_event("manual_turn", args.prompt, cost_usd=result.total_cost_usd)
@@ -117,6 +124,24 @@ async def _run(args: argparse.Namespace) -> None:
             print(f"expires_at: {token.expires_at}")
         return
 
+    if args.command == "github" and args.github_command == "open-pr":
+        result = open_pull_request(
+            cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
+            title=args.title,
+            summary=args.summary,
+            tests=args.tests,
+            ticket=args.ticket,
+            notes=args.notes,
+            base=args.base,
+            branch=args.branch,
+            draft=not args.ready,
+        )
+        print(f"pr_url: {result.url}")
+        print(f"branch: {result.branch}")
+        print(f"base: {result.base}")
+        print(f"title: {result.title}")
+        return
+
     if args.command == "linear" and args.linear_command == "check":
         report = check_linear_setup()
         print(format_linear_report(report))
@@ -164,6 +189,8 @@ async def _run(args: argparse.Namespace) -> None:
                     prompt,
                     cwd=_configured_cwd(args.cwd, runtime_config),
                     model=runtime_config.claude_model,
+                    permission_mode=runtime_config.permission_mode,
+                    logger=print,
                 )
             from .agent import TurnResult
 
@@ -276,6 +303,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mint a GitHub App installation token and export it for this process.",
     )
     github_app_token.set_defaults(github_command="app-token")
+    github_open_pr = github_subparsers.add_parser(
+        "open-pr",
+        help="Push the current feature branch and open an Intern-authored draft PR.",
+    )
+    github_open_pr.add_argument("--cwd", help="Repo directory. Defaults to INTERN_TARGET_REPO or cwd.")
+    github_open_pr.add_argument("--title", required=True, help="PR title.")
+    github_open_pr.add_argument("--summary", required=True, help="Short description of the code change.")
+    github_open_pr.add_argument("--tests", required=True, help="Short test/check result.")
+    github_open_pr.add_argument("--ticket", help="Linked ticket ID, e.g. TOT-12.")
+    github_open_pr.add_argument("--notes", help="Short reviewer note.")
+    github_open_pr.add_argument("--base", help="Base branch. Defaults to origin/HEAD or main.")
+    github_open_pr.add_argument("--branch", help="Head branch. Defaults to current branch.")
+    github_open_pr.add_argument("--ready", action="store_true", help="Open a ready PR instead of a draft PR.")
+    github_open_pr.set_defaults(github_command="open-pr")
 
     slack = subparsers.add_parser("slack", help="Slack integration helpers.")
     slack_subparsers = slack.add_subparsers(dest="slack_command", required=True)

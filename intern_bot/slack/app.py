@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import asyncio
@@ -43,6 +44,23 @@ class ActivityIndicator(Protocol):
 class ThreadHistoryProvider(Protocol):
     async def fetch_thread_messages(self, *, channel: str, thread_ts: str, limit: int = 20) -> Sequence[dict[str, Any]]:
         """Fetch recent Slack thread messages, oldest to newest."""
+
+
+class ThreadContextStore(Protocol):
+    def recent_messages(self, *, channel: str, thread_ts: str, limit: int = 20) -> Sequence[dict[str, Any]]:
+        """Return locally remembered thread messages, oldest to newest."""
+
+    def append_message(
+        self,
+        *,
+        channel: str,
+        thread_ts: str,
+        text: str,
+        user: str | None = None,
+        bot: bool = False,
+        ts: str | None = None,
+    ) -> None:
+        """Remember a Slack thread message."""
 
 
 Logger = Callable[[str], None]
@@ -201,6 +219,39 @@ class PrintPoster:
         print(f"[slack dry-run] clear typing on {channel} thread {thread_ts}")
 
 
+class SlackThreadContext:
+    def __init__(self, *, max_messages_per_thread: int = 40) -> None:
+        self.max_messages_per_thread = max_messages_per_thread
+        self._messages: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    def recent_messages(self, *, channel: str, thread_ts: str, limit: int = 20) -> Sequence[dict[str, Any]]:
+        return tuple(self._messages.get((channel, thread_ts), ())[-limit:])
+
+    def append_message(
+        self,
+        *,
+        channel: str,
+        thread_ts: str,
+        text: str,
+        user: str | None = None,
+        bot: bool = False,
+        ts: str | None = None,
+    ) -> None:
+        if not text.strip():
+            return
+        message: dict[str, Any] = {"text": text}
+        if ts:
+            message["ts"] = ts
+        if bot:
+            message["bot_id"] = "local-intern"
+        elif user:
+            message["user"] = user
+        key = (channel, thread_ts)
+        messages = self._messages.setdefault(key, [])
+        messages.append(message)
+        del messages[: max(0, len(messages) - self.max_messages_per_thread)]
+
+
 async def handle_slack_text(
     text: str,
     *,
@@ -213,6 +264,7 @@ async def handle_slack_text(
     poster: Poster,
     activity: ActivityIndicator | None = None,
     thread_history: ThreadHistoryProvider | None = None,
+    thread_context: ThreadContextStore | None = None,
     runner: Runner | None = None,
     memory: InternMemory | None = None,
     logger: Logger | None = None,
@@ -231,17 +283,62 @@ async def handle_slack_text(
             )
         )
 
-    thread_messages = await _fetch_thread_history(
-        thread_history,
+    thread_messages = _merge_thread_messages(
+        await _fetch_thread_history(
+            thread_history,
+            channel=channel,
+            thread_ts=thread_ts,
+            logger=logger,
+        ),
+        _fetch_cached_thread_context(
+            thread_context,
+            channel=channel,
+            thread_ts=thread_ts,
+            logger=logger,
+        ),
+    )
+
+    effective_thread_ts = thread_ts or event_ts
+    if thread_context is not None and effective_thread_ts:
+        _append_thread_context(
+            thread_context,
+            channel=channel,
+            thread_ts=effective_thread_ts,
+            text=text,
+            user=user,
+            ts=event_ts,
+            logger=logger,
+        )
+
+    thread_messages = _merge_thread_messages(
+        thread_messages,
+        _fetch_cached_thread_context(
+            thread_context,
+            channel=channel,
+            thread_ts=thread_ts,
+            logger=logger,
+        ),
+    )
+    _log_thread_context_summary(
+        logger,
         channel=channel,
         thread_ts=thread_ts,
-        logger=logger,
+        message_count=len(thread_messages),
     )
 
     casual_reply = casual_intern_reply(text)
     if casual_reply and not _thread_has_work_context(thread_messages):
         result = TurnResult(text=casual_reply)
         await poster.post_message(casual_reply, channel=channel, thread_ts=thread_ts)
+        if thread_context is not None and effective_thread_ts:
+            _append_thread_context(
+                thread_context,
+                channel=channel,
+                thread_ts=effective_thread_ts,
+                text=casual_reply,
+                bot=True,
+                logger=logger,
+            )
         if memory is not None:
             memory.append_event("slack_banter", _one_line(text))
         return result
@@ -263,19 +360,46 @@ async def handle_slack_text(
             logger=logger,
         )
 
+    work_ack_sent = False
     if _should_send_work_ack(text, thread_messages):
+        ack = _work_ack_text(text, thread_messages)
         await poster.post_message(
-            _work_ack_text(text, thread_messages),
+            ack,
             channel=channel,
             thread_ts=thread_ts,
         )
+        work_ack_sent = True
+        if thread_context is not None and effective_thread_ts:
+            _append_thread_context(
+                thread_context,
+                channel=channel,
+                thread_ts=effective_thread_ts,
+                text=ack,
+                bot=True,
+                logger=logger,
+            )
 
     try:
+        if logger is not None:
+            logger(
+                "[slack] agent turn start "
+                f"channel={channel} thread_ts={thread_ts or '-'} "
+                f"context_messages={len(thread_messages)} work_ack_sent={work_ack_sent}"
+            )
         result = await (runner or run_turn)(prompt)
     except Exception as exc:
         reply = f"Intern runtime error: {_one_line(str(exc), limit=300)}"
         try:
             await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+            if thread_context is not None and effective_thread_ts:
+                _append_thread_context(
+                    thread_context,
+                    channel=channel,
+                    thread_ts=effective_thread_ts,
+                    text=reply,
+                    bot=True,
+                    logger=logger,
+                )
         finally:
             if activity is not None and status_thread_ts:
                 await _best_effort_activity(
@@ -285,6 +409,12 @@ async def handle_slack_text(
         if memory is not None:
             memory.append_event("slack_turn_error", _one_line(text))
         return TurnResult(text=reply)
+    if logger is not None:
+        logger(
+            "[slack] agent turn complete "
+            f"channel={channel} thread_ts={thread_ts or '-'} "
+            f"reply_chars={len(result.text.strip())} cost_usd={result.total_cost_usd:.6f}"
+        )
 
     reply = result.text.strip()
     if ensure_reply and not reply:
@@ -293,6 +423,15 @@ async def handle_slack_text(
     if reply:
         try:
             await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+            if thread_context is not None and effective_thread_ts:
+                _append_thread_context(
+                    thread_context,
+                    channel=channel,
+                    thread_ts=effective_thread_ts,
+                    text=reply,
+                    bot=True,
+                    logger=logger,
+                )
         finally:
             if activity is not None and status_thread_ts:
                 await _best_effort_activity(
@@ -378,7 +517,9 @@ def casual_intern_reply(text: str) -> str | None:
 
 
 def _thread_has_work_context(thread_messages: Sequence[dict[str, Any]]) -> bool:
-    return _looks_like_work_request(_thread_text(thread_messages))
+    thread_text = _thread_text(thread_messages)
+    normalized = _normalize_casual_text(thread_text)
+    return _looks_like_work_request(thread_text) or bool(re.search(r"\b(ticket|issue|linear|tot\s*\d+)\b", normalized))
 
 
 def _should_send_work_ack(text: str, thread_messages: Sequence[dict[str, Any]]) -> bool:
@@ -387,6 +528,8 @@ def _should_send_work_ack(text: str, thread_messages: Sequence[dict[str, Any]]) 
         return False
     if _looks_like_work_request(text):
         return True
+    if _looks_like_followup_work_request(normalized):
+        return _thread_has_work_context(thread_messages)
     if normalized in {"yes", "yeah", "yep", "ya", "ya bro", "yes bro", "sure", "do it", "go for it"}:
         return _thread_has_work_context(thread_messages)
     return False
@@ -394,7 +537,8 @@ def _should_send_work_ack(text: str, thread_messages: Sequence[dict[str, Any]]) 
 
 def _work_ack_text(text: str, thread_messages: Sequence[dict[str, Any]]) -> str:
     combined = f"{_thread_text(thread_messages)}\n{text}".lower()
-    if "pr" in combined or "pull request" in combined:
+    normalized = _normalize_casual_text(combined)
+    if "pr" in normalized or "pull request" in normalized or re.search(r"\bopen\b.*\bp\b", normalized):
         return "on it, I'll make the change and open a draft PR"
     return "on it, I'll work it and report back here"
 
@@ -412,6 +556,13 @@ def _looks_like_work_request(text: str) -> bool:
     )
 
 
+def _looks_like_followup_work_request(normalized: str) -> bool:
+    return bool(
+        re.search(r"\b(fix|do|take|make|open)\b.*\b(those|that|it|changes|change|p|pr)\b", normalized)
+        or re.search(r"\b(can u|can you)\b.*\b(fix|do|take|open)\b", normalized)
+    )
+
+
 async def _fetch_thread_history(
     provider: ThreadHistoryProvider | None,
     *,
@@ -420,13 +571,119 @@ async def _fetch_thread_history(
     logger: Logger | None,
 ) -> Sequence[dict[str, Any]]:
     if provider is None or not thread_ts:
+        if logger is not None and thread_ts:
+            logger(f"[slack] thread history skipped source=slack reason=no_provider channel={channel} thread_ts={thread_ts}")
         return ()
     try:
-        return await provider.fetch_thread_messages(channel=channel, thread_ts=thread_ts)
+        messages = await provider.fetch_thread_messages(channel=channel, thread_ts=thread_ts)
     except Exception as exc:
         if logger is not None:
-            logger(f"[slack] thread history warning: {_one_line(str(exc), limit=240)}")
+            logger(
+                "[slack] thread history warning "
+                f"source=slack channel={channel} thread_ts={thread_ts} "
+                f"error={_one_line(str(exc), limit=240)!r}"
+            )
         return ()
+    if logger is not None:
+        logger(f"[slack] thread history source=slack count={len(messages)} channel={channel} thread_ts={thread_ts}")
+    return messages
+
+
+def _fetch_cached_thread_context(
+    store: ThreadContextStore | None,
+    *,
+    channel: str,
+    thread_ts: str | None,
+    logger: Logger | None,
+) -> Sequence[dict[str, Any]]:
+    if store is None or not thread_ts:
+        if logger is not None and thread_ts:
+            logger(f"[slack] thread context skipped source=cache reason=no_store channel={channel} thread_ts={thread_ts}")
+        return ()
+    try:
+        messages = store.recent_messages(channel=channel, thread_ts=thread_ts)
+    except Exception as exc:
+        if logger is not None:
+            logger(
+                "[slack] thread cache read warning "
+                f"source=cache channel={channel} thread_ts={thread_ts} "
+                f"error={_one_line(str(exc), limit=240)!r}"
+            )
+        return ()
+    if logger is not None:
+        logger(f"[slack] thread context source=cache count={len(messages)} channel={channel} thread_ts={thread_ts}")
+    return messages
+
+
+def _append_thread_context(
+    store: ThreadContextStore,
+    *,
+    channel: str,
+    thread_ts: str,
+    text: str,
+    user: str | None = None,
+    bot: bool = False,
+    ts: str | None = None,
+    logger: Logger | None,
+) -> None:
+    try:
+        store.append_message(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=text,
+            user=user,
+            bot=bot,
+            ts=ts,
+        )
+    except Exception as exc:
+        if logger is not None:
+            logger(f"[slack] thread cache write warning: {_one_line(str(exc), limit=240)}")
+        return
+    if logger is not None:
+        speaker = "bot" if bot else "user"
+        logger(
+            "[slack] thread context append "
+            f"source=cache speaker={speaker} channel={channel} thread_ts={thread_ts} "
+            f"text_chars={len(text)}"
+        )
+
+
+def _log_thread_context_summary(
+    logger: Logger | None,
+    *,
+    channel: str,
+    thread_ts: str | None,
+    message_count: int,
+) -> None:
+    if logger is None:
+        return
+    logger(
+        "[slack] thread context merged "
+        f"channel={channel} thread_ts={thread_ts or '-'} "
+        f"context_messages={message_count}"
+    )
+
+
+def _merge_thread_messages(
+    first: Sequence[dict[str, Any]],
+    second: Sequence[dict[str, Any]],
+) -> Sequence[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen = set()
+    for message in (*first, *second):
+        identity = _thread_message_identity(message)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(dict(message))
+    return tuple(merged)
+
+
+def _thread_message_identity(message: dict[str, Any]) -> tuple[str, str, str]:
+    ts = str(message.get("ts") or "")
+    speaker = "bot" if message.get("bot_id") or message.get("bot_profile") else str(message.get("user") or "user")
+    text = str(message.get("text") or "")
+    return (ts, speaker, text)
 
 
 def _format_thread_messages(messages: Sequence[dict[str, Any]]) -> list[str]:
@@ -490,6 +747,7 @@ def run_socket_mode(config: SlackConfig) -> None:
     memory = InternMemory(runtime_config.memory_path)
     activity = _BoltActivity(app.client)
     thread_history = _BoltThreadHistory(app.client)
+    thread_context = SlackThreadContext()
 
     _log("starting Slack Socket Mode listener")
     _best_effort_sync_activity(lambda: app.client.users_setPresence(presence="auto"), logger=_log)
@@ -516,10 +774,13 @@ def run_socket_mode(config: SlackConfig) -> None:
                 poster=_FunctionPoster(post),
                 activity=activity,
                 thread_history=thread_history,
+                thread_context=thread_context,
                 runner=lambda prompt: run_turn(
                     prompt,
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
+                    permission_mode=runtime_config.permission_mode,
+                    logger=_log,
                 ),
                 memory=memory or None,
                 logger=_log,
@@ -551,10 +812,13 @@ def run_socket_mode(config: SlackConfig) -> None:
                 poster=_FunctionPoster(post),
                 activity=activity,
                 thread_history=thread_history,
+                thread_context=thread_context,
                 runner=lambda prompt: run_turn(
                     prompt,
                     cwd=target_cwd,
                     model=runtime_config.claude_model,
+                    permission_mode=runtime_config.permission_mode,
+                    logger=_log,
                 ),
                 memory=memory or None,
                 logger=_log,
@@ -681,10 +945,35 @@ class _BoltThreadHistory:
             ts=thread_ts,
             limit=limit,
         )
-        if not isinstance(result, dict) or not result.get("ok", True):
-            raise RuntimeError(f"Slack thread fetch failed: {result.get('error', 'unknown_error')}")
-        messages = result.get("messages") or ()
+        ok = _slack_response_get(result, "ok", True)
+        if not ok:
+            error = _slack_response_get(result, "error", "unknown_error")
+            raise RuntimeError(
+                f"Slack thread fetch failed: error={error} response_type={type(result).__name__} "
+                "hint=check bot scopes for conversations.replies history access"
+            )
+        messages = _slack_response_get(result, "messages", ()) or ()
         return tuple(message for message in messages if isinstance(message, dict))
+
+
+def _slack_response_get(response: Any, key: str, default: Any = None) -> Any:
+    if isinstance(response, Mapping):
+        return response.get(key, default)
+    data = getattr(response, "data", None)
+    if isinstance(data, Mapping):
+        return data.get(key, default)
+    getter = getattr(response, "get", None)
+    if callable(getter):
+        try:
+            return getter(key, default)
+        except TypeError:
+            try:
+                return getter(key)
+            except Exception:
+                return default
+        except Exception:
+            return default
+    return default
 
 
 async def _best_effort_activity(awaitable: Awaitable[Any], *, logger: Logger | None = None) -> None:

@@ -66,6 +66,7 @@ async def heartbeat_once(
             heartbeat_prompt,
             cwd=cwd,
             model=config.claude_model,
+            permission_mode=config.permission_mode,
         )
     )
     result = await runner(prompt)

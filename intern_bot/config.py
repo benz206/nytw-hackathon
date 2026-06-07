@@ -24,6 +24,7 @@ def _float_env(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class InternConfig:
     claude_model: str | None = "sonnet"
+    permission_mode: str | None = "bypassPermissions"
     target_repo_path: Path | None = None
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
@@ -41,6 +42,7 @@ class InternConfig:
         target_repo = os.getenv("INTERN_TARGET_REPO")
         return cls(
             claude_model=os.getenv("INTERN_CLAUDE_MODEL", cls.claude_model) or None,
+            permission_mode=os.getenv("INTERN_PERMISSION_MODE", cls.permission_mode) or None,
             target_repo_path=Path(target_repo).expanduser() if target_repo else None,
             heartbeat_seconds=_int_env("INTERN_HEARTBEAT_SECONDS", cls.heartbeat_seconds),
             random_banter_chance=_float_env("INTERN_RANDOM_BANTER_CHANCE", cls.random_banter_chance),

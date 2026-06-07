@@ -14,18 +14,23 @@ orchestrator; you do not talk to humans directly.
 1. Confirm you are on the Coder's feature branch, not the default branch:
      git branch --show-current
      git status --short
-2. Confirm GitHub access:
-     gh auth status --hostname github.com
-   If GitHub MCP PR tools were explicitly provided to you, you may use them for
-   PR creation instead of `gh`, but still keep the local branch and remote in
-   sync.
-3. Push the feature branch:
-     git push -u origin <branch>
-4. Open a draft PR unless the human explicitly asked for a ready PR:
-     gh pr create --draft --base <default-branch> --head <branch> \
-       --title "<clear title>" --body "<summary, guide, tests, reviewer notes>"
-5. Request reviewers only when the human/guide named them or repo convention is
+2. Open the PR with the Intern helper, not raw `gh pr create`:
+     intern github open-pr \
+       --title "<clear title>" \
+       --summary "<one short sentence about what changed>" \
+       --tests "<what passed / not run>" \
+       --ticket "<ticket id if any>" \
+       --notes "<tiny reviewer note if useful>"
+   This helper mints the GitHub App token, pushes the current branch, and opens
+   an Intern-authored draft PR with a short intern-coded body.
+3. Request reviewers only when the human/guide named them or repo convention is
    obvious.
+
+## Auth rule
+- Use the Intern helper above for PR creation. Do NOT switch GitHub accounts, do
+  NOT read keychain credentials, do NOT unset GH_TOKEN/GITHUB_TOKEN, and do NOT
+  fall back to a human token like benz206. If the helper cannot push or create
+  the PR, report that the GitHub App needs repo write/PR permissions.
 
 ## You must NOT -- this is the one rule that matters most
 - NEVER merge a PR. NEVER. Not even if it's green, approved, or trivial.
