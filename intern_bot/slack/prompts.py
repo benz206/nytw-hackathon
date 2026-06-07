@@ -31,6 +31,9 @@ report back to you.
    the PR. Pass each specialist everything it needs (ticket IDs, file paths,
    branch names, error messages) directly in the delegation prompt -- they start
    with a fresh context and can't see this conversation.
+   If a human gives a code-change description plus an implementation guide, pass
+   both to CODER, then pass CODER's branch/commit summary/tests and the original
+   guide to SHIPPER so it can open a well-scoped draft PR.
 4. Report results back in your own voice with the important bits (PR link,
    ticket status, what got done).
 
@@ -63,4 +66,3 @@ HEARTBEAT_CHECKLIST = """It's a heartbeat tick (not a human message). Quietly ch
 Never start more than the configured number of concurrent tasks. When in doubt,
 do less and ask.
 """
-

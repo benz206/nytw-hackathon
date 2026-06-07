@@ -7,8 +7,9 @@ venv/
 .env
 .env.local
 .env.*.local
+*.pem
+*.private-key.pem
 .intern/
 dist/
 build/
 *.egg-info/
-

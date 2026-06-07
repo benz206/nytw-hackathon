@@ -1,12 +1,14 @@
 import hashlib
 import hmac
 import asyncio
+import os
 
 from intern_bot.agent import TurnResult
 from intern_bot.slack.app import (
     PrintPoster,
     SlackConfig,
     SlackEnvCheck,
+    _create_single_workspace_bolt_app,
     format_slack_prompt,
     handle_slack_text,
     verify_slack_signature,
@@ -71,3 +73,37 @@ def test_handle_slack_text_runs_runner_and_posts(capsys):
 
     captured = capsys.readouterr()
     assert "hello from intern" in captured.out
+
+
+def test_handle_slack_text_posts_runner_errors(capsys):
+    async def runner(prompt: str) -> TurnResult:
+        raise RuntimeError("Claude Code is not logged in")
+
+    result = asyncio.run(
+        handle_slack_text(
+            "hi",
+            channel="C123",
+            user="U123",
+            poster=PrintPoster(),
+            runner=runner,
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert "Intern runtime error: Claude Code is not logged in" in captured.out
+    assert "Claude Code is not logged in" in result.text
+
+
+def test_bolt_app_uses_bot_token_when_oauth_env_is_present(monkeypatch):
+    monkeypatch.setenv("SLACK_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SLACK_CLIENT_SECRET", "client-secret")
+    config = SlackConfig(signing_secret="signing", bot_token="xoxb-test")
+
+    app = _create_single_workspace_bolt_app(config, token_verification_enabled=False)
+
+    assert app._token == "xoxb-test"
+    assert app._oauth_flow is None
+    assert app._authorize is None
+    assert app.client.token == "xoxb-test"
+    assert "SLACK_CLIENT_ID" in os.environ
+    assert "SLACK_CLIENT_SECRET" in os.environ

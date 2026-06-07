@@ -115,12 +115,14 @@ something unambiguous like `merge PR #123`.
 
 Perseus setup is operator-side. Do not have the agent run login commands.
 
-Install and authenticate Perseus, then index every allowlisted repo:
+First sign in at [perseus.computer](https://perseus.computer), open the console,
+and use **Set up GitHub access** to authorize the GitHub repos the Intern is
+allowed to search. Then install and authenticate Perseus locally, and index every
+allowlisted repo:
 
 ```bash
 curl -fsSL https://perseus.computer/install.sh | sh
 perseus login
-perseus rules add
 cd /path/to/repo
 perseus doctor
 perseus index
@@ -147,6 +149,75 @@ perseus query "where is authentication handled?"
 perseus query benz206/nytw-hackathon "where is authentication handled?"
 perseus open path/to/file.py:42
 ```
+
+## GitHub PR Setup
+
+The Intern can open PRs through either GitHub MCP tools you pass to
+`create_options()` or the GitHub CLI available to the Shipper through Bash. For a
+fully local setup, install and authenticate `gh` as the human/operator:
+
+```bash
+gh auth login --hostname github.com
+gh auth status --hostname github.com
+cd /path/to/repo
+git remote -v
+```
+
+For the GitHub App/bot identity, keep the PEM out of Git and point the runtime at
+it from `.env.local`:
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_INSTALLATION_ID=987654
+GITHUB_APP_PRIVATE_KEY_PATH=/Users/benz/Documents/nytw-hackathon/bob-the-intern.2026-06-07.private-key.pem
+```
+
+`GITHUB_APP_ID` is shown on the GitHub App settings page. The installation ID is
+visible in the URL when configuring the installed app, or can be discovered from
+GitHub's App installations API after authenticating as the app. Keep the key mode
+private:
+
+```bash
+chmod 600 /Users/benz/Documents/nytw-hackathon/bob-the-intern.2026-06-07.private-key.pem
+```
+
+When those three variables are present, the Intern mints a short-lived GitHub App
+installation token at the start of each agent turn and exports it to `GH_TOKEN`
+and `GITHUB_TOKEN` for that process. Do not paste an installation token into
+`.env.local`; let the runtime refresh it. You can test token minting without
+printing the token:
+
+```bash
+intern github app-token
+```
+
+Run the combined repo preflight before letting the Intern ship work:
+
+```bash
+intern github doctor --cwd /path/to/repo --with-perseus --require-app
+```
+
+That check verifies:
+
+- the directory is a cloned Git repo with an `origin` remote
+- `gh` is installed and authenticated for PR creation
+- GitHub App env vars are present and the private key exists with `0600`
+- the worktree state is visible before the Shipper pushes
+- Perseus is installed, authenticated, and has a ready index when
+  `--with-perseus` is used
+
+Once this is green, a human can give the Intern a description and guide in Slack
+or locally:
+
+```bash
+intern turn --cwd /path/to/repo \
+  "Implement ENG-123: add a Slack health-check command. Guide: use the existing slack check command patterns, add focused tests, then open a draft PR."
+```
+
+The orchestrator should pass the description and guide to the Coder, the Coder
+should use Perseus first, create an `intern/...` branch, test, and commit, and
+the Shipper should push that branch and open a draft GitHub PR. The Shipper must
+never merge.
 
 ## MCP / Tool Wiring
 
@@ -335,6 +406,7 @@ python -m compileall intern_bot tests
 intern --help
 intern run
 intern perseus doctor
+intern github doctor --with-perseus --require-app
 intern slack check
 intern heartbeat-once
 ```
@@ -346,6 +418,9 @@ intern heartbeat-once
 - Missing Claude SDK: run `pip install -r requirements.txt && pip install -e .`.
 - Missing Perseus CLI: run `curl -fsSL https://perseus.computer/install.sh | sh`,
   then `perseus login` and `perseus index` as the operator.
+- GitHub PR creation fails: run `intern github doctor --cwd /path/to/repo
+  --with-perseus --require-app`, then fix the reported `gh auth`, GitHub App,
+  remote, branch, worktree, or Perseus index issue.
 - Slack Socket Mode will not start: add `SLACK_APP_TOKEN` from the Slack app's
   Socket Mode app-level token page.
 - Heartbeat does nothing: check `INTERN_PAUSED`, quiet hours, `.intern/memory.md`

@@ -8,6 +8,13 @@ import asyncio
 from .agent import run_turn
 from .config import InternConfig
 from .env import load_env_file
+from .github import (
+    check_github_app_config,
+    check_github_repo,
+    ensure_github_app_token_from_env,
+    format_github_app_report,
+    format_github_report,
+)
 from .heartbeat import heartbeat_loop, heartbeat_once
 from .memory import InternMemory
 from .perseus import check_perseus, format_perseus_report
@@ -66,6 +73,39 @@ async def _run(args: argparse.Namespace) -> None:
         print(format_perseus_report(report))
         if not report.ok:
             raise SystemExit(1)
+        return
+
+    if args.command == "github" and args.github_command == "doctor":
+        report = check_github_repo(
+            cwd=args.cwd,
+            remote=args.remote,
+            hostname=args.hostname,
+            run_auth_status=not args.skip_auth_status,
+        )
+        print(format_github_report(report))
+        ok = report.ok
+        if args.with_perseus:
+            perseus_report = check_perseus(cwd=args.cwd)
+            print()
+            print(format_perseus_report(perseus_report))
+            ok = ok and perseus_report.ok
+        if args.require_app:
+            app_report = check_github_app_config()
+            print()
+            print(format_github_app_report(app_report))
+            ok = ok and app_report.ok
+        if not ok:
+            raise SystemExit(1)
+        return
+
+    if args.command == "github" and args.github_command == "app-token":
+        token = ensure_github_app_token_from_env(force=True)
+        if token is None:
+            print("GitHub App env vars are missing; set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and GITHUB_APP_PRIVATE_KEY_PATH.")
+            raise SystemExit(1)
+        print("GitHub App installation token: minted")
+        if token.expires_at:
+            print(f"expires_at: {token.expires_at}")
         return
 
     if args.command == "slack" and args.slack_command == "check":
@@ -142,6 +182,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip `perseus index --status`.",
     )
+
+    github = subparsers.add_parser("github", help="GitHub repo integration helpers.")
+    github_subparsers = github.add_subparsers(dest="github_command", required=True)
+    github_doctor = github_subparsers.add_parser(
+        "doctor",
+        help="Check local GitHub repo, gh auth, and optional Perseus setup.",
+    )
+    github_doctor.add_argument("--cwd", help="Repo directory to check. Defaults to the current directory.")
+    github_doctor.add_argument("--remote", default="origin", help="Git remote used for PR branches.")
+    github_doctor.add_argument("--hostname", default="github.com", help="GitHub hostname for `gh auth status`.")
+    github_doctor.add_argument(
+        "--skip-auth-status",
+        action="store_true",
+        help="Skip `gh auth status` for offline checks.",
+    )
+    github_doctor.add_argument(
+        "--with-perseus",
+        action="store_true",
+        help="Also run the Perseus doctor for this repo.",
+    )
+    github_doctor.add_argument(
+        "--require-app",
+        action="store_true",
+        help="Also require GitHub App env vars and a private 0600 PEM key.",
+    )
+    github_app_token = github_subparsers.add_parser(
+        "app-token",
+        help="Mint a GitHub App installation token and export it for this process.",
+    )
+    github_app_token.set_defaults(github_command="app-token")
 
     slack = subparsers.add_parser("slack", help="Slack integration helpers.")
     slack_subparsers = slack.add_subparsers(dest="slack_command", required=True)

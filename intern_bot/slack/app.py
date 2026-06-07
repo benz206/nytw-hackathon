@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import asyncio
 import hmac
@@ -10,7 +11,7 @@ import inspect
 import json
 import os
 import time
-from typing import Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Iterator, Protocol
 from urllib import error, request
 
 from intern_bot.agent import TurnResult, run_turn
@@ -148,7 +149,15 @@ async def handle_slack_text(
 ) -> TurnResult:
     """Run one Intern turn for a Slack message and post the reply."""
     prompt = format_slack_prompt(text, channel=channel, user=user, thread_ts=thread_ts)
-    result = await (runner or run_turn)(prompt)
+    try:
+        result = await (runner or run_turn)(prompt)
+    except Exception as exc:
+        reply = f"Intern runtime error: {_one_line(str(exc), limit=300)}"
+        await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
+        if memory is not None:
+            memory.append_event("slack_turn_error", _one_line(text))
+        return TurnResult(text=reply)
+
     reply = result.text.strip()
     if reply:
         await poster.post_message(reply, channel=channel, thread_ts=thread_ts)
@@ -203,14 +212,13 @@ def run_socket_mode(config: SlackConfig) -> None:
         raise RuntimeError(f"Missing required Slack env vars for Socket Mode: {', '.join(missing)}")
 
     try:
-        from slack_bolt import App
         from slack_bolt.adapter.socket_mode import SocketModeHandler
     except ImportError as exc:
         raise RuntimeError(
             "Slack Socket Mode requires slack-bolt. Run `pip install -r requirements.txt`."
         ) from exc
 
-    app = App(token=config.bot_token, signing_secret=config.signing_secret)
+    app = _create_single_workspace_bolt_app(config)
     runtime_config = InternConfig.from_env()
     memory = InternMemory(runtime_config.memory_path)
 
@@ -237,6 +245,37 @@ def run_socket_mode(config: SlackConfig) -> None:
         )
 
     SocketModeHandler(app, config.app_token).start()
+
+
+def _create_single_workspace_bolt_app(
+    config: SlackConfig,
+    *,
+    token_verification_enabled: bool = True,
+) -> Any:
+    """Create a Bolt app that always uses the single-workspace bot token.
+
+    Bolt auto-enables OAuth mode when SLACK_CLIENT_ID and SLACK_CLIENT_SECRET
+    exist in the environment. This project stores those values for operator
+    reference, but Socket Mode should use SLACK_BOT_TOKEN directly.
+    """
+    from slack_bolt import App
+
+    with _without_slack_oauth_env():
+        return App(
+            token=config.bot_token,
+            signing_secret=config.signing_secret,
+            token_verification_enabled=token_verification_enabled,
+        )
+
+
+@contextmanager
+def _without_slack_oauth_env() -> Iterator[None]:
+    keys = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+    saved = {key: os.environ.pop(key) for key in keys if key in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
 
 
 class _FunctionPoster:

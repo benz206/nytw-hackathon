@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
+from .github.app_auth import ensure_github_app_token_from_env
 from .github import DEFAULT_SHIPPER_TOOLS, SHIPPER_PROMPT
 from .linear import DEFAULT_PLANNER_TOOLS, PLANNER_PROMPT
 from .merge_guard import block_merges
@@ -86,18 +87,24 @@ async def run_turn(
             "claude-agent-sdk is not installed. Run `pip install -e .` before running turns."
         ) from exc
 
+    ensure_github_app_token_from_env()
     sdk_options = options or create_options(cwd=cwd, model=model)
     result = TurnResult()
 
-    async for message in query(prompt=prompt, options=sdk_options):
-        result.raw_messages.append(message)
-        if isinstance(message, AssistantMessage):
-            result.text += _assistant_text(message, TextBlock)
-        elif isinstance(message, ResultMessage):
-            if message.result:
-                result.text += message.result
-            if message.total_cost_usd:
-                result.total_cost_usd += message.total_cost_usd
+    try:
+        async for message in query(prompt=prompt, options=sdk_options):
+            result.raw_messages.append(message)
+            if isinstance(message, AssistantMessage):
+                result.text = _append_distinct(result.text, _assistant_text(message, TextBlock))
+            elif isinstance(message, ResultMessage):
+                if message.result:
+                    result.text = _append_distinct(result.text, message.result)
+                if message.total_cost_usd:
+                    result.total_cost_usd += message.total_cost_usd
+    except Exception:
+        if result.text.strip():
+            return result
+        raise
 
     return result
 
@@ -110,3 +117,11 @@ def _assistant_text(message: Any, text_block_type: Any) -> str:
         elif getattr(block, "type", None) == "text" and hasattr(block, "text"):
             parts.append(block.text)
     return "".join(parts)
+
+
+def _append_distinct(existing: str, addition: str | None) -> str:
+    if not addition:
+        return existing
+    if addition in existing:
+        return existing
+    return existing + addition
