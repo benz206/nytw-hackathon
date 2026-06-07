@@ -29,12 +29,14 @@ def test_slack_config_reports_missing_runtime_tokens():
         client_id="client",
         client_secret="secret",
         signing_secret="signing",
+        logs_channel_id="C0B8XQT76TB",
     )
 
     rendered = "\n".join(SlackEnvCheck(config).lines())
 
     assert "SLACK_SIGNING_SECRET: set" in rendered
     assert "SLACK_BOT_TOKEN: missing" in rendered
+    assert "SLACK_LOGS_CHANNELID: set" in rendered
     assert "Always Show My Bot as Online" in rendered
     assert config.missing_for_events_api() == ["SLACK_BOT_TOKEN"]
     assert config.missing_for_socket_mode() == ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]
@@ -181,6 +183,57 @@ def test_handle_slack_text_posts_work_ack_before_runner():
         ("on it, I'll make the change and open a draft PR", "C123", "111.222"),
         ("opened it: https://github.com/example/repo/pull/1", "C123", "111.222"),
     ]
+
+
+def test_handle_slack_text_logs_perseus_usage_to_logs_channel():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append((text, channel, thread_ts))
+
+    class BashToolUseBlock:
+        name = "Bash"
+        input = {"command": 'perseus query "where is Slack logging handled?"'}
+
+    class AssistantMessage:
+        content = [BashToolUseBlock()]
+
+    async def runner(prompt: str) -> TurnResult:
+        return TurnResult(
+            text="- branch: intern/test\n- perseus: used (where is Slack logging handled?)",
+            raw_messages=[AssistantMessage()],
+        )
+
+    poster = RecordingPoster()
+
+    asyncio.run(
+        handle_slack_text(
+            "please check the repo status",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            event_type="message.channels",
+            poster=poster,
+            runner=runner,
+            perseus_logs_channel_id="C0B8XQT76TB",
+        )
+    )
+
+    log_message, log_channel, log_thread = poster.messages[0]
+    assert log_channel == "C0B8XQT76TB"
+    assert log_thread is None
+    assert log_message.startswith("Perseus usage log\n```text\n")
+    assert "source_channel: C123" in log_message
+    assert "thread_ts: 111.222" in log_message
+    assert 'perseus query "where is Slack logging handled?"' in log_message
+    assert "perseus: used (where is Slack logging handled?)" in log_message
+    assert poster.messages[1] == (
+        "- branch: intern/test\n- perseus: used (where is Slack logging handled?)",
+        "C123",
+        "111.222",
+    )
 
 
 def test_handle_slack_text_uses_thread_context_for_affirmation():

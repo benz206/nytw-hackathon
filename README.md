@@ -350,11 +350,14 @@ SLACK_SIGNING_SECRET=...
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_DEFAULT_CHANNEL=C...
+SLACK_LOGS_CHANNELID=C0B8XQT76TB
 ```
 
 `SLACK_SIGNING_SECRET` plus `SLACK_BOT_TOKEN` is enough for Events API handling.
 For the easiest local loop, enable Socket Mode in the Slack app and add
 `SLACK_APP_TOKEN`.
+Set `SLACK_LOGS_CHANNELID` to the team logs channel; Perseus command usage from
+agent turns is posted there as clear fenced code-block audit notes.
 
 Slack bot token scopes/events used by the Socket Mode listener:
 

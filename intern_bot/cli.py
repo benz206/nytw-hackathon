@@ -213,6 +213,7 @@ async def _run(args: argparse.Namespace) -> None:
             poster=poster,
             runner=runner,
             memory=memory,
+            perseus_logs_channel_id=config.logs_channel_id,
         )
         return
 

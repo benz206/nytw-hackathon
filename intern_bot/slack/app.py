@@ -77,6 +77,7 @@ class SlackConfig:
     bot_token: str | None = None
     app_token: str | None = None
     default_channel: str | None = None
+    logs_channel_id: str | None = None
 
     @classmethod
     def from_env(cls, *, env_file: str | None = ".env.local") -> "SlackConfig":
@@ -90,6 +91,7 @@ class SlackConfig:
             bot_token=os.getenv("SLACK_BOT_TOKEN"),
             app_token=os.getenv("SLACK_APP_TOKEN"),
             default_channel=os.getenv("SLACK_DEFAULT_CHANNEL"),
+            logs_channel_id=os.getenv("SLACK_LOGS_CHANNELID"),
         )
 
     def missing_for_events_api(self) -> list[str]:
@@ -120,6 +122,7 @@ class SlackEnvCheck:
             "SLACK_BOT_TOKEN": self.config.bot_token,
             "SLACK_APP_TOKEN": self.config.app_token,
             "SLACK_DEFAULT_CHANNEL": self.config.default_channel,
+            "SLACK_LOGS_CHANNELID": self.config.logs_channel_id,
         }
         lines = ["Slack env check"]
         for key, value in configured.items():
@@ -269,6 +272,7 @@ async def handle_slack_text(
     memory: InternMemory | None = None,
     logger: Logger | None = None,
     ensure_reply: bool = True,
+    perseus_logs_channel_id: str | None = None,
 ) -> TurnResult:
     """Run one Intern turn for a Slack message and post the reply."""
     if logger is not None:
@@ -415,6 +419,16 @@ async def handle_slack_text(
             f"channel={channel} thread_ts={thread_ts or '-'} "
             f"reply_chars={len(result.text.strip())} cost_usd={result.total_cost_usd:.6f}"
         )
+    await _post_perseus_usage_log(
+        result,
+        poster=poster,
+        logs_channel_id=perseus_logs_channel_id,
+        source_channel=channel,
+        user=user,
+        thread_ts=thread_ts,
+        event_type=event_type,
+        logger=logger,
+    )
 
     reply = result.text.strip()
     if ensure_reply and not reply:
@@ -446,6 +460,118 @@ async def handle_slack_text(
     if memory is not None:
         memory.append_event("slack_turn", _one_line(text), cost_usd=result.total_cost_usd)
     return result
+
+
+async def _post_perseus_usage_log(
+    result: TurnResult,
+    *,
+    poster: Poster,
+    logs_channel_id: str | None,
+    source_channel: str,
+    user: str | None,
+    thread_ts: str | None,
+    event_type: str,
+    logger: Logger | None,
+) -> None:
+    if not logs_channel_id:
+        return
+    message = _format_perseus_usage_log(
+        result,
+        source_channel=source_channel,
+        user=user,
+        thread_ts=thread_ts,
+        event_type=event_type,
+    )
+    if message is None:
+        return
+    try:
+        await poster.post_message(message, channel=logs_channel_id)
+    except Exception as exc:
+        if logger is not None:
+            logger(f"[slack] perseus usage log warning: {_one_line(str(exc), limit=240)}")
+
+
+def _format_perseus_usage_log(
+    result: TurnResult,
+    *,
+    source_channel: str,
+    user: str | None,
+    thread_ts: str | None,
+    event_type: str,
+) -> str | None:
+    commands = _extract_perseus_commands(result.raw_messages)
+    summary = _extract_perseus_summary(result.text)
+    if not commands and not summary:
+        return None
+
+    lines = [
+        "Perseus usage",
+        f"event_type: {event_type}",
+        f"source_channel: {source_channel}",
+        f"thread_ts: {thread_ts or '-'}",
+        f"user: {user or '-'}",
+    ]
+    if commands:
+        lines.append("commands:")
+        lines.extend(f"- {_sanitize_codeblock_text(command)}" for command in commands)
+    else:
+        lines.append("commands: not observed in SDK tool stream")
+    if summary:
+        lines.append("summary:")
+        lines.extend(f"- {_sanitize_codeblock_text(line)}" for line in summary)
+    return "Perseus usage log\n```text\n" + "\n".join(lines) + "\n```"
+
+
+def _extract_perseus_commands(raw_messages: Sequence[Any]) -> list[str]:
+    commands: list[str] = []
+    seen = set()
+    for message in raw_messages:
+        for block in getattr(message, "content", []) or []:
+            command = _tool_use_command(block)
+            if not command:
+                continue
+            for line in _perseus_command_lines(command):
+                if line in seen:
+                    continue
+                seen.add(line)
+                commands.append(line)
+    return commands
+
+
+def _tool_use_command(block: Any) -> str | None:
+    name = str(getattr(block, "name", "") or "").lower()
+    tool_input = getattr(block, "input", None)
+    if not isinstance(tool_input, Mapping):
+        return None
+    if name not in {"bash", "shell"}:
+        return None
+    for key in ("command", "cmd"):
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _perseus_command_lines(command: str) -> list[str]:
+    lines: list[str] = []
+    for line in command.splitlines():
+        cleaned = line.strip()
+        if re.search(r"(^|[\s;&|])(?:\S*/)?perseus(\s|$)", cleaned):
+            lines.append(cleaned)
+    return lines
+
+
+def _extract_perseus_summary(text: str) -> list[str]:
+    lines: list[str] = []
+    for line in text.splitlines():
+        cleaned = line.strip()
+        if re.match(r"^-?\s*perseus\s*:", cleaned, flags=re.IGNORECASE):
+            lines.append(cleaned.lstrip("- "))
+    return lines
+
+
+def _sanitize_codeblock_text(text: str) -> str:
+    return text.replace("```", "` ` `")
 
 
 def format_slack_prompt(
@@ -790,6 +916,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 ),
                 memory=memory or None,
                 logger=_log,
+                perseus_logs_channel_id=config.logs_channel_id,
             )
         )
 
@@ -830,6 +957,7 @@ def run_socket_mode(config: SlackConfig) -> None:
                 ),
                 memory=memory or None,
                 logger=_log,
+                perseus_logs_channel_id=config.logs_channel_id,
             )
         )
 
