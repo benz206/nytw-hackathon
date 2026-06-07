@@ -91,6 +91,7 @@ export INTERN_TARGET_REPO=/Users/benz/Documents/task-manager
 `INTERN_CLAUDE_MODEL` is passed through to Claude Code's `--model` option. This
 repo defaults to `sonnet`; set it to another Claude Code model alias or full
 model ID if you want a different speed/capability tradeoff.
+
 `INTERN_PERMISSION_MODE` is passed through to Claude Code's `--permission-mode`.
 The runtime defaults to `bypassPermissions` so Slack/heartbeat turns can edit
 files, create branches, push, and open draft PRs without an interactive approval
@@ -99,6 +100,7 @@ explicitly authorizes them.
 `INTERN_GIT_AUTHOR_NAME` and `INTERN_GIT_AUTHOR_EMAIL` are exported into SDK
 turns as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`, so commits made by the Intern do
 not inherit the operator's global Git identity.
+
 `INTERN_TARGET_REPO` is the code repository the Intern should edit. Keep this
 set to the product repo, not this Intern runtime repo.
 
@@ -229,23 +231,6 @@ printing the token:
 ```bash
 intern github app-token
 ```
-
-The Shipper opens PRs through the Intern helper so it never falls back to a
-human token:
-
-```bash
-intern github open-pr \
-  --cwd /Users/benz/Documents/task-manager \
-  --title "TOT-12 add the Intern to contributors" \
-  --summary "Added the Intern to the contributors list." \
-  --tests "bun run build passed." \
-  --ticket TOT-12
-```
-
-That command mints a GitHub App installation token, pushes the current feature
-branch, and opens a short draft PR as `bob-the-intern[bot]`. If it cannot push
-or create the PR, fix the GitHub App installation permissions instead of using a
-personal token.
 
 Run the combined repo preflight before letting the Intern ship work:
 

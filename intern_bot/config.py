@@ -28,6 +28,7 @@ class InternConfig:
     git_author_name: str = "bob-the-intern[bot]"
     git_author_email: str = "291564787+bob-the-intern[bot]@users.noreply.github.com"
     target_repo_path: Path | None = None
+    preview_url: str | None = None
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
     max_concurrent_tasks: int = 1
@@ -48,6 +49,7 @@ class InternConfig:
             git_author_name=os.getenv("INTERN_GIT_AUTHOR_NAME", cls.git_author_name),
             git_author_email=os.getenv("INTERN_GIT_AUTHOR_EMAIL", cls.git_author_email),
             target_repo_path=Path(target_repo).expanduser() if target_repo else None,
+            preview_url=os.getenv("INTERN_PREVIEW_URL") or None,
             heartbeat_seconds=_int_env("INTERN_HEARTBEAT_SECONDS", cls.heartbeat_seconds),
             random_banter_chance=_float_env("INTERN_RANDOM_BANTER_CHANCE", cls.random_banter_chance),
             max_concurrent_tasks=_int_env("INTERN_MAX_CONCURRENT_TASKS", cls.max_concurrent_tasks),
