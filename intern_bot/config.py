@@ -23,6 +23,7 @@ def _float_env(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class InternConfig:
+    claude_model: str | None = "haiku"
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
     max_concurrent_tasks: int = 1
@@ -37,6 +38,7 @@ class InternConfig:
         quiet_start = os.getenv("INTERN_QUIET_HOURS_START")
         quiet_end = os.getenv("INTERN_QUIET_HOURS_END")
         return cls(
+            claude_model=os.getenv("INTERN_CLAUDE_MODEL", cls.claude_model) or None,
             heartbeat_seconds=_int_env("INTERN_HEARTBEAT_SECONDS", cls.heartbeat_seconds),
             random_banter_chance=_float_env("INTERN_RANDOM_BANTER_CHANCE", cls.random_banter_chance),
             max_concurrent_tasks=_int_env("INTERN_MAX_CONCURRENT_TASKS", cls.max_concurrent_tasks),
@@ -49,4 +51,3 @@ class InternConfig:
             quiet_hours_start=int(quiet_start) if quiet_start else None,
             quiet_hours_end=int(quiet_end) if quiet_end else None,
         )
-

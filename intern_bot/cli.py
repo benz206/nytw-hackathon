@@ -7,9 +7,18 @@ import asyncio
 
 from .agent import run_turn
 from .config import InternConfig
+from .env import load_env_file
 from .heartbeat import heartbeat_loop, heartbeat_once
 from .memory import InternMemory
 from .perseus import check_perseus, format_perseus_report
+from .slack.app import (
+    PrintPoster,
+    SlackConfig,
+    SlackEnvCheck,
+    SlackWebPoster,
+    handle_slack_text,
+    run_socket_mode,
+)
 
 
 async def _print_message(text: str) -> None:
@@ -17,11 +26,13 @@ async def _print_message(text: str) -> None:
 
 
 async def _run(args: argparse.Namespace) -> None:
+    load_env_file(".env.local")
+
     if args.command == "turn":
         config = InternConfig.from_env()
         memory = InternMemory(config.memory_path)
         memory.ensure_exists()
-        result = await run_turn(args.prompt, cwd=args.cwd)
+        result = await run_turn(args.prompt, cwd=args.cwd, model=config.claude_model)
         if result.text.strip():
             print(result.text.strip())
         memory.append_event("manual_turn", args.prompt, cost_usd=result.total_cost_usd)
@@ -41,6 +52,11 @@ async def _run(args: argparse.Namespace) -> None:
         await heartbeat_loop(config=config, memory=memory, post_message=_print_message)
         return
 
+    if args.command == "run":
+        config = SlackConfig.from_env(env_file=args.env_file)
+        run_socket_mode(config)
+        return
+
     if args.command == "perseus" and args.perseus_command == "doctor":
         report = check_perseus(
             cwd=args.cwd,
@@ -50,6 +66,49 @@ async def _run(args: argparse.Namespace) -> None:
         print(format_perseus_report(report))
         if not report.ok:
             raise SystemExit(1)
+        return
+
+    if args.command == "slack" and args.slack_command == "check":
+        config = SlackConfig.from_env(env_file=args.env_file)
+        print("\n".join(SlackEnvCheck(config).lines()))
+        if args.require_socket_mode and config.missing_for_socket_mode():
+            raise SystemExit(1)
+        if args.require_events_api and config.missing_for_events_api():
+            raise SystemExit(1)
+        return
+
+    if args.command == "slack" and args.slack_command == "simulate":
+        config = SlackConfig.from_env(env_file=args.env_file)
+        runtime_config = InternConfig.from_env()
+        memory = InternMemory(runtime_config.memory_path)
+        memory.ensure_exists()
+        poster = (
+            PrintPoster()
+            if args.dry_run
+            else SlackWebPoster(_require(config.bot_token, "SLACK_BOT_TOKEN"))
+        )
+
+        async def runner(prompt: str):
+            if not args.no_agent:
+                return await run_turn(prompt, cwd=args.cwd, model=runtime_config.claude_model)
+            from .agent import TurnResult
+
+            return TurnResult(text=f"Slack plumbing OK. Received:\n{prompt}")
+
+        await handle_slack_text(
+            args.text,
+            channel=args.channel or config.default_channel or "local-test",
+            user=args.user,
+            thread_ts=args.thread_ts,
+            poster=poster,
+            runner=runner,
+            memory=memory,
+        )
+        return
+
+    if args.command == "slack" and args.slack_command == "socket":
+        config = SlackConfig.from_env(env_file=args.env_file)
+        run_socket_mode(config)
         return
 
     raise ValueError(f"Unknown command: {args.command}")
@@ -62,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
     turn = subparsers.add_parser("turn", help="Run one orchestrator turn.")
     turn.add_argument("prompt", help="Prompt to send to the orchestrator.")
     turn.add_argument("--cwd", help="Working directory for the SDK session.")
+
+    run = subparsers.add_parser("run", help="Run the Slack Socket Mode bot.")
+    run.add_argument("--env-file", default=".env.local", help="Env file to load.")
 
     subparsers.add_parser("heartbeat-once", help="Run one heartbeat tick.")
     subparsers.add_parser("heartbeat", help="Run the heartbeat loop forever.")
@@ -80,11 +142,61 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip `perseus index --status`.",
     )
+
+    slack = subparsers.add_parser("slack", help="Slack integration helpers.")
+    slack_subparsers = slack.add_subparsers(dest="slack_command", required=True)
+
+    slack_check = slack_subparsers.add_parser("check", help="Check Slack env configuration.")
+    slack_check.add_argument("--env-file", default=".env.local", help="Env file to load.")
+    slack_check.add_argument(
+        "--require-events-api",
+        action="store_true",
+        help="Exit nonzero unless Events API env vars are ready.",
+    )
+    slack_check.add_argument(
+        "--require-socket-mode",
+        action="store_true",
+        help="Exit nonzero unless Socket Mode env vars are ready.",
+    )
+
+    simulate = slack_subparsers.add_parser("simulate", help="Simulate a Slack mention locally.")
+    simulate.add_argument("text", help="Slack message text to send to the Intern.")
+    simulate.add_argument("--env-file", default=".env.local", help="Env file to load.")
+    simulate.add_argument("--cwd", help="Working directory for the SDK session.")
+    simulate.add_argument("--channel", help="Slack channel ID/name for the simulated event.")
+    simulate.add_argument("--user", help="Slack user ID/name for the simulated event.")
+    simulate.add_argument("--thread-ts", help="Slack thread timestamp for the simulated event.")
+    simulate.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Print the Slack reply instead of posting to Slack.",
+    )
+    simulate.add_argument(
+        "--post",
+        dest="dry_run",
+        action="store_false",
+        help="Post the reply to Slack using SLACK_BOT_TOKEN.",
+    )
+    simulate.add_argument(
+        "--no-agent",
+        action="store_true",
+        help="Test Slack plumbing without invoking the Claude Agent SDK.",
+    )
+
+    socket = slack_subparsers.add_parser("socket", help="Run Slack Socket Mode app.")
+    socket.add_argument("--env-file", default=".env.local", help="Env file to load.")
     return parser
 
 
 def main() -> None:
     asyncio.run(_run(build_parser().parse_args()))
+
+
+def _require(value: str | None, name: str) -> str:
+    if not value:
+        raise RuntimeError(f"Missing required env var: {name}")
+    return value
 
 
 if __name__ == "__main__":

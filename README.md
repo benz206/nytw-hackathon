@@ -81,7 +81,12 @@ export INTERN_RANDOM_BANTER_CHANCE=0.10
 export INTERN_MAX_CONCURRENT_TASKS=1
 export INTERN_MAX_SELF_STARTED_PRS_PER_DAY=3
 export INTERN_DAILY_SPEND_CAP_USD=5.00
+export INTERN_CLAUDE_MODEL=haiku
 ```
+
+`INTERN_CLAUDE_MODEL` is passed through to Claude Code's `--model` option. This
+repo defaults to `haiku`; set it to another Claude Code model alias or full
+model ID when you want a stronger/slower model for implementation work.
 
 Optional quiet hours use local 24-hour clock values:
 
@@ -208,6 +213,41 @@ Slack `post_message` function.
 
 ## Slack Integration Sketch
 
+For local Slack testing, put Slack credentials in `.env.local`:
+
+```bash
+SLACK_APP_ID=...
+SLACK_CLIENT_ID=...
+SLACK_CLIENT_SECRET=...
+SLACK_SIGNING_SECRET=...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_DEFAULT_CHANNEL=C...
+```
+
+`SLACK_SIGNING_SECRET` plus `SLACK_BOT_TOKEN` is enough for Events API handling.
+For the easiest local loop, enable Socket Mode in the Slack app and add
+`SLACK_APP_TOKEN`.
+
+Check what is ready without printing secrets:
+
+```bash
+intern slack check
+intern slack check --require-socket-mode
+```
+
+Test Slack plumbing without calling the agent:
+
+```bash
+intern slack simulate "hello intern" --no-agent
+```
+
+Run the local Socket Mode listener:
+
+```bash
+intern run
+```
+
 Your Slack event handler should:
 
 1. Ignore events while `INTERN_PAUSED=1`.
@@ -293,7 +333,9 @@ source .venv/bin/activate
 pytest
 python -m compileall intern_bot tests
 intern --help
+intern run
 intern perseus doctor
+intern slack check
 intern heartbeat-once
 ```
 
@@ -304,6 +346,8 @@ intern heartbeat-once
 - Missing Claude SDK: run `pip install -r requirements.txt && pip install -e .`.
 - Missing Perseus CLI: run `curl -fsSL https://perseus.computer/install.sh | sh`,
   then `perseus login` and `perseus index` as the operator.
+- Slack Socket Mode will not start: add `SLACK_APP_TOKEN` from the Slack app's
+  Socket Mode app-level token page.
 - Heartbeat does nothing: check `INTERN_PAUSED`, quiet hours, `.intern/memory.md`
   daily caps, and `INTERN_DAILY_SPEND_CAP_USD`.
 - Merge command denied: expected behavior. Get explicit human approval before

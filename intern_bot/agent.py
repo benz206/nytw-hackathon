@@ -22,6 +22,7 @@ class TurnResult:
 def create_options(
     *,
     cwd: str | None = None,
+    model: str | None = None,
     mcp_servers: dict[str, Any] | None = None,
     planner_tools: list[str] | None = None,
     coder_tools: list[str] | None = None,
@@ -62,13 +63,21 @@ def create_options(
     }
     if cwd:
         kwargs["cwd"] = cwd
+    if model:
+        kwargs["model"] = model
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
 
     return ClaudeAgentOptions(**kwargs)
 
 
-async def run_turn(prompt: str, *, options: Any | None = None, cwd: str | None = None) -> TurnResult:
+async def run_turn(
+    prompt: str,
+    *,
+    options: Any | None = None,
+    cwd: str | None = None,
+    model: str | None = None,
+) -> TurnResult:
     """Run one orchestrator turn and collect a human-postable result."""
     try:
         from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, query
@@ -77,7 +86,7 @@ async def run_turn(prompt: str, *, options: Any | None = None, cwd: str | None =
             "claude-agent-sdk is not installed. Run `pip install -e .` before running turns."
         ) from exc
 
-    sdk_options = options or create_options(cwd=cwd)
+    sdk_options = options or create_options(cwd=cwd, model=model)
     result = TurnResult()
 
     async for message in query(prompt=prompt, options=sdk_options):

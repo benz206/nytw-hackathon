@@ -60,7 +60,7 @@ async def heartbeat_once(
     if randomizer.random() < config.random_banter_chance:
         prompt += "\n(You may add one bit of light banter this tick.)"
 
-    runner = run_once or (lambda heartbeat_prompt: run_turn(heartbeat_prompt))
+    runner = run_once or (lambda heartbeat_prompt: run_turn(heartbeat_prompt, model=config.claude_model))
     result = await runner(prompt)
     memory.append_event(
         "heartbeat",
