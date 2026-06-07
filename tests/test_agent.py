@@ -46,8 +46,8 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
         input = {"description": "ship it", "prompt": "secret-ish large prompt", "subagent_type": "coder"}
 
     class AssistantMessage:
-        def __init__(self):
-            self.content = [TextBlock("working on it"), ToolUseBlock()]
+        def __init__(self, *, with_text=True):
+            self.content = [TextBlock("working on it"), ToolUseBlock()] if with_text else [ToolUseBlock()]
 
     class ResultMessage:
         result = "opened PR"
@@ -60,6 +60,7 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
 
     async def query(*, prompt, options):
         yield AssistantMessage()
+        yield AssistantMessage(with_text=False)
         yield ResultMessage()
 
     fake_sdk = types.SimpleNamespace(
@@ -86,8 +87,8 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
         )
     )
 
-    assert result.text == "working on itopened PR"
-    assert progress == ["I'm working on the code branch now."]
+    assert result.text == "opened PR"
+    assert progress == ["working on it", "quick update: ship it"]
     rendered = "\n".join(logs)
     assert (
         "[agent] turn setup cwd=/tmp/repo model=sonnet permission_mode=bypassPermissions "
@@ -100,7 +101,7 @@ def test_run_turn_logs_sdk_progress(monkeypatch):
     assert "subagent_type=coder" in rendered
     assert "description='ship it'" in rendered
     assert "sdk message ResultMessage subtype=success is_error=False" in rendered
-    assert "turn done messages=2 text_chars=22 cost_usd=0.250000" in rendered
+    assert "turn done messages=3 text_chars=9 cost_usd=0.250000" in rendered
 
 
 def test_prompts_require_branching_from_remote_default():

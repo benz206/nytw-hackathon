@@ -391,6 +391,7 @@ async def handle_slack_text(
                 f"channel={channel} thread_ts={thread_ts or '-'} "
                 f"context_messages={len(thread_messages)} work_ack_sent={work_ack_sent}"
             )
+        posted_progress: list[str] = []
         result = await _run_with_progress(
             runner or run_turn,
             prompt,
@@ -401,6 +402,7 @@ async def handle_slack_text(
                 thread_context=thread_context,
                 context_thread_ts=effective_thread_ts,
                 logger=logger,
+                posted=posted_progress,
             ),
         )
     except Exception as exc:
@@ -442,8 +444,8 @@ async def handle_slack_text(
         logger=logger,
     )
 
-    reply = _slack_reply_text(result.text)
-    if ensure_reply and not reply:
+    reply = _final_reply_text(result.text, posted_progress)
+    if ensure_reply and not reply and not posted_progress:
         reply = "I got your message, but the Intern runtime did not return a reply."
         result.text = reply
     elif reply:
@@ -499,6 +501,7 @@ def _progress_poster(
     thread_context: ThreadContextStore | None,
     context_thread_ts: str | None,
     logger: Logger | None,
+    posted: list[str] | None = None,
 ) -> ProgressCallback:
     seen: set[str] = set()
     max_updates = 3
@@ -514,6 +517,8 @@ def _progress_poster(
             if logger is not None:
                 logger(f"[slack] progress post warning: {_one_line(str(exc), limit=240)}")
             return
+        if posted is not None:
+            posted.append(cleaned)
         if thread_context is not None and context_thread_ts:
             _append_thread_context(
                 thread_context,
@@ -527,6 +532,24 @@ def _progress_poster(
     return post_progress
 
 
+def _final_reply_text(text: str, progress_messages: Sequence[str]) -> str:
+    reply = _slack_reply_text(text)
+    if not reply or not progress_messages:
+        return reply
+    return _remove_posted_progress(reply, progress_messages)
+
+
+def _remove_posted_progress(reply: str, progress_messages: Sequence[str]) -> str:
+    cleaned = reply
+    posted = {_one_line(message, limit=240) for message in progress_messages if message}
+    for progress in sorted(posted, key=len, reverse=True):
+        if not progress:
+            continue
+        cleaned = re.sub(rf"(?m)^[ \t]*{re.escape(progress)}[ \t]*(?:\n|$)", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _slack_progress_text(text: str) -> str | None:
     """Turn SDK/runtime progress into a human Slack update."""
     cleaned = _one_line(text, limit=240)
@@ -534,55 +557,37 @@ def _slack_progress_text(text: str) -> str | None:
         return None
 
     normalized = cleaned.lower()
-    canned = {
-        "i'm checking linear and picking the safe path.": (
-            "checking Linear. if the ticket is secretly cursed, i'll notice"
-        ),
-        "i'm working on the code branch now.": (
-            "in the code now. poking it with a stick and taking notes"
-        ),
-        "i'm opening the draft pr now.": (
-            "making the draft PR. trying to look employable in the title"
-        ),
-        "i'm checking perseus for repo context.": (
-            "asking Perseus where this repo keeps the weird stuff"
-        ),
-        "i'm setting up the feature branch.": (
-            "making a branch before i touch anything. small mercy"
-        ),
-    }
-    if normalized in canned:
-        return canned[normalized]
-
     if normalized.startswith("quick update:"):
         description = cleaned.split(":", 1)[1].strip()
-        return _task_progress_text(description)
+        return _generated_progress_text(description)
 
     return cleaned
 
 
-def _task_progress_text(description: str) -> str | None:
-    description = _one_line(description, limit=120)
+def _generated_progress_text(description: str) -> str | None:
+    description = _one_line(_slack_reply_text(description), limit=160)
     if not description:
         return None
-    normalized = description.lower()
+    fragment = _lower_initial(description.rstrip("."))
+    if _starts_with_progress_verb(fragment):
+        return fragment
+    return f"working on {fragment}"
 
-    if "perseus" in normalized:
-        return "asking Perseus for the map. my backup plan is vibes, so this is better"
-    if "orient" in normalized or "project structure" in normalized:
-        return "getting oriented in the repo. already judging a few folder names"
-    if "list" in normalized and ("file" in normalized or "root" in normalized):
-        return "checking the file layout. repo archaeology, but with tests hopefully"
-    if "roast" in normalized or "flame" in normalized:
-        return "starting the codebase roast. keeping it HR-safe, barely"
-    if "branch" in normalized:
-        return "branch setup time. i am choosing a lane before causing traffic"
-    if "test" in normalized:
-        return "running tests. preparing my surprised face either way"
-    if "pull request" in normalized or "pr" in normalized:
-        return "PR stuff now. making it presentable before adults see it"
 
-    return f"still digging: {description}"
+def _starts_with_progress_verb(text: str) -> bool:
+    return bool(
+        re.match(
+            r"^(asking|building|checking|creating|fetching|implementing|opening|pushing|reading|running|setting|testing|updating|working|writing)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _lower_initial(text: str) -> str:
+    if not text:
+        return text
+    return text[0].lower() + text[1:]
 
 
 def _slack_reply_text(text: str) -> str:
@@ -833,6 +838,11 @@ def format_slack_prompt(
     parts.append(
         "- If answering requires inspecting the codebase, delegate to the Agent tool with "
         "`subagent_type: coder`; CODER must use Perseus before broad file search when it can."
+    )
+    parts.append(
+        "- When chaining Planner/Coder/Shipper, write a one-line progress update before the next delegation "
+        "after a useful milestone, especially after creating/finding a Linear ticket; do not repeat those "
+        "progress lines in the final reply."
     )
     parts.append("- Keep casual replies to 1-2 short sentences.")
     parts.append("- Do not dump a long capability list or repeat sections unless the user asked for detail.")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
+import shlex
 from typing import Any, Awaitable, Callable
 
 from .codebase import CODER_PROMPT, DEFAULT_CODER_TOOLS
@@ -285,6 +286,12 @@ async def run_turn(
     result = TurnResult()
     progress_seen: set[str] = set()
 
+    async def emit_progress_once(text: str | None) -> None:
+        if not text or text in progress_seen:
+            return
+        progress_seen.add(text)
+        await _emit_progress(progress_callback, text)
+
     try:
         if logger is not None:
             logger("[agent] query stream open")
@@ -292,17 +299,23 @@ async def run_turn(
             result.raw_messages.append(message)
             if logger is not None:
                 logger(f"[agent] {_sdk_message_summary(message, TextBlock)}")
-            progress = _sdk_progress_update(message, TextBlock)
-            if progress and progress not in progress_seen:
-                progress_seen.add(progress)
-                await _emit_progress(progress_callback, progress)
             if isinstance(message, AssistantMessage):
-                result.text = _append_distinct(result.text, _assistant_text(message, TextBlock))
+                assistant_text = _assistant_text(message, TextBlock)
+                if _assistant_message_has_tool_use(message, TextBlock):
+                    progress_text = _one_line(assistant_text, limit=240) or _sdk_progress_update(
+                        message,
+                        TextBlock,
+                    )
+                    await emit_progress_once(progress_text)
+                else:
+                    result.text = _append_distinct(result.text, assistant_text)
             elif isinstance(message, ResultMessage):
                 if message.result:
                     result.text = _append_distinct(result.text, message.result)
                 if message.total_cost_usd:
                     result.total_cost_usd += message.total_cost_usd
+            else:
+                await emit_progress_once(_sdk_progress_update(message, TextBlock))
     except Exception as exc:
         if logger is not None:
             logger(f"[agent] query error {_one_line(str(exc), limit=500)!r}")
@@ -343,6 +356,18 @@ def _append_distinct(existing: str, addition: str | None) -> str:
     if addition in existing:
         return existing
     return existing + addition
+
+
+def _assistant_message_has_tool_use(message: Any, text_block_type: Any) -> bool:
+    for block in getattr(message, "content", []) or []:
+        if isinstance(block, text_block_type) or (
+            getattr(block, "type", None) == "text" and hasattr(block, "text")
+        ):
+            continue
+        name = type(block).__name__
+        if name in {"ToolUseBlock", "ServerToolUseBlock"} or hasattr(block, "input"):
+            return True
+    return False
 
 
 def _sdk_message_summary(message: Any, text_block_type: Any) -> str:
@@ -434,24 +459,38 @@ def _content_block_progress(block: Any, text_block_type: Any) -> str | None:
         tool_name = str(getattr(block, "name", "") or "")
         tool_input = getattr(block, "input", None)
         if tool_name == "Agent" and isinstance(tool_input, dict):
-            subagent_type = tool_input.get("subagent_type")
-            if subagent_type == "planner":
-                return "I'm checking Linear and picking the safe path."
-            if subagent_type == "coder":
-                return "I'm working on the code branch now."
-            if subagent_type == "shipper":
-                return "I'm opening the draft PR now."
+            description = _one_line(str(tool_input.get("description") or ""), limit=120)
+            if description:
+                return f"quick update: {description}"
+            subagent_type = _one_line(str(tool_input.get("subagent_type") or ""), limit=80)
+            if subagent_type:
+                return f"quick update: working with {subagent_type}"
         if tool_name.lower() in {"bash", "shell"} and isinstance(tool_input, dict):
             command = tool_input.get("command") or tool_input.get("cmd")
             if isinstance(command, str):
-                lowered = command.lower()
-                if "perseus " in lowered:
-                    return "I'm checking Perseus for repo context."
-                if "intern github open-pr" in lowered or "gh pr create" in lowered:
-                    return "I'm opening the draft PR now."
-                if "git switch -c" in lowered or "git checkout -b" in lowered:
-                    return "I'm setting up the feature branch."
+                description = _shell_progress_description(command)
+                if description:
+                    return f"quick update: {description}"
     return None
+
+
+def _shell_progress_description(command: str) -> str | None:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    visible_parts = []
+    for part in parts:
+        if not part or part.startswith("-"):
+            break
+        if any(char in part for char in "\n\r\t=:/\\"):
+            break
+        visible_parts.append(part)
+        if len(visible_parts) >= 3:
+            break
+    if not visible_parts:
+        return None
+    return f"running {' '.join(visible_parts)}"
 
 
 def _one_line(text: str, limit: int = 160) -> str:

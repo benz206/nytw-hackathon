@@ -77,6 +77,7 @@ def test_format_slack_prompt_includes_context():
     assert "where the PR is" in prompt
     assert "`subagent_type: coder`" in prompt
     assert "CODER must use Perseus" in prompt
+    assert "one-line progress update" in prompt
     assert "1-2 short sentences" in prompt
     assert "long capability list" in prompt
     assert prompt.endswith("hello intern")
@@ -100,6 +101,8 @@ def test_orchestrator_prompt_uses_intern_coded_slack_voice():
     assert "uhhh mb guys" in ORCHESTRATOR_PROMPT
     assert "Ask at most one tiny question" in ORCHESTRATOR_PROMPT
     assert "no three-question questionnaire" in ORCHESTRATOR_PROMPT
+    assert "posted live" in ORCHESTRATOR_PROMPT
+    assert "Do not repeat progress lines" in ORCHESTRATOR_PROMPT
     assert "1-2 short sentences" in ORCHESTRATOR_PROMPT
     assert "Do not dump a long feature list" in ORCHESTRATOR_PROMPT
     assert "Corny jokes" not in ORCHESTRATOR_PROMPT
@@ -200,9 +203,9 @@ def test_handle_slack_text_posts_progress_updates_from_runner():
             self.messages.append((text, channel, thread_ts))
 
     async def runner(prompt: str, *, progress_callback):
-        await progress_callback("I'm checking Linear and picking the safe path.")
-        await progress_callback("I'm working on the code branch now.")
-        await progress_callback("I'm working on the code branch now.")
+        await progress_callback("quick update: checking Linear ticket")
+        await progress_callback("quick update: implementing code change")
+        await progress_callback("quick update: implementing code change")
         return TurnResult(text="opened it: https://github.com/example/repo/pull/1")
 
     poster = RecordingPoster()
@@ -221,9 +224,47 @@ def test_handle_slack_text_posts_progress_updates_from_runner():
     assert result.text == "opened it: https://github.com/example/repo/pull/1"
     assert poster.messages == [
         ("on it, i'll make the change and open a draft PR", "C123", "111.222"),
-        ("checking Linear. if the ticket is secretly cursed, i'll notice", "C123", "111.222"),
-        ("in the code now. poking it with a stick and taking notes", "C123", "111.222"),
+        ("checking Linear ticket", "C123", "111.222"),
+        ("implementing code change", "C123", "111.222"),
         ("opened it: https://github.com/example/repo/pull/1", "C123", "111.222"),
+    ]
+
+
+def test_handle_slack_text_does_not_repeat_posted_progress_in_final_reply():
+    class RecordingPoster:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def post_message(self, text: str, *, channel: str, thread_ts: str | None = None) -> None:
+            self.messages.append((text, channel, thread_ts))
+
+    async def runner(prompt: str, *, progress_callback):
+        await progress_callback("ticket's up -> https://linear.app/example/issue/TOT-14/dark-mode")
+        return TurnResult(
+            text=(
+                "ticket's up -> https://linear.app/example/issue/TOT-14/dark-mode\n\n"
+                "all done: https://github.com/example/repo/pull/5"
+            )
+        )
+
+    poster = RecordingPoster()
+
+    result = asyncio.run(
+        handle_slack_text(
+            "<@U123> create a linear ticket then open a pr",
+            channel="C123",
+            user="U123",
+            thread_ts="111.222",
+            poster=poster,
+            runner=runner,
+        )
+    )
+
+    assert result.text == "all done: https://github.com/example/repo/pull/5"
+    assert poster.messages == [
+        ("on it, i'll make the change and open a draft PR", "C123", "111.222"),
+        ("ticket's up -> https://linear.app/example/issue/TOT-14/dark-mode", "C123", "111.222"),
+        ("all done: https://github.com/example/repo/pull/5", "C123", "111.222"),
     ]
 
 
@@ -255,7 +296,7 @@ def test_handle_slack_text_acks_codebase_roast_request_in_intern_voice():
     assert result.text == "found three crimes and one misdemeanor"
     assert poster.messages == [
         ("on it, i'll go stare at the repo until it confesses", "C123", "111.222"),
-        ("starting the codebase roast. keeping it HR-safe, barely", "C123", "111.222"),
+        ("working on codebase roast exploration", "C123", "111.222"),
         ("found three crimes and one misdemeanor", "C123", "111.222"),
     ]
 
@@ -280,15 +321,13 @@ def test_slack_reply_text_strips_markdown_that_slack_shows_literally():
     )
 
 
-def test_slack_progress_text_turns_raw_sdk_updates_into_intern_voice():
-    assert _slack_progress_text("quick update: Codebase roast exploration") == (
-        "starting the codebase roast. keeping it HR-safe, barely"
-    )
+def test_slack_progress_text_generates_updates_from_runtime_descriptions():
+    assert _slack_progress_text("quick update: Codebase roast exploration") == "working on codebase roast exploration"
     assert _slack_progress_text("quick update: Running Orient with Perseus on project structure") == (
-        "asking Perseus for the map. my backup plan is vibes, so this is better"
+        "running Orient with Perseus on project structure"
     )
     assert _slack_progress_text("quick update: Running List project root files") == (
-        "checking the file layout. repo archaeology, but with tests hopefully"
+        "running List project root files"
     )
 
 
