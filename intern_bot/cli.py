@@ -125,13 +125,15 @@ async def _run(args: argparse.Namespace) -> None:
         return
 
     if args.command == "github" and args.github_command == "open-pr":
+        config = InternConfig.from_env()
         result = open_pull_request(
-            cwd=_configured_cwd(args.cwd, InternConfig.from_env()),
+            cwd=_configured_cwd(args.cwd, config),
             title=args.title,
             summary=args.summary,
             tests=args.tests,
             ticket=args.ticket,
             notes=args.notes,
+            preview_url=args.preview_url or config.preview_url,
             base=args.base,
             branch=args.branch,
             draft=not args.ready,
@@ -140,6 +142,8 @@ async def _run(args: argparse.Namespace) -> None:
         print(f"branch: {result.branch}")
         print(f"base: {result.base}")
         print(f"title: {result.title}")
+        if result.preview_url:
+            print(f"preview_url: {result.preview_url}")
         return
 
     if args.command == "linear" and args.linear_command == "check":
@@ -313,6 +317,10 @@ def build_parser() -> argparse.ArgumentParser:
     github_open_pr.add_argument("--tests", required=True, help="Short test/check result.")
     github_open_pr.add_argument("--ticket", help="Linked ticket ID, e.g. TOT-12.")
     github_open_pr.add_argument("--notes", help="Short reviewer note.")
+    github_open_pr.add_argument(
+        "--preview-url",
+        help="Preview/demo URL to include in the PR body and report. Defaults to INTERN_PREVIEW_URL.",
+    )
     github_open_pr.add_argument("--base", help="Base branch. Defaults to origin/HEAD or main.")
     github_open_pr.add_argument("--branch", help="Head branch. Defaults to current branch.")
     github_open_pr.add_argument("--ready", action="store_true", help="Open a ready PR instead of a draft PR.")

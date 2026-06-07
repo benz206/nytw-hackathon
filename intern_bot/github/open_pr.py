@@ -17,6 +17,7 @@ class OpenPrResult:
     branch: str
     base: str
     title: str
+    preview_url: str | None = None
 
 
 def open_pull_request(
@@ -27,6 +28,7 @@ def open_pull_request(
     tests: str,
     ticket: str | None = None,
     notes: str | None = None,
+    preview_url: str | None = None,
     base: str | None = None,
     branch: str | None = None,
     remote: str = "origin",
@@ -48,7 +50,13 @@ def open_pull_request(
     base_branch = base or _default_base_branch(cwd=repo, remote=remote, env=env)
     _git(["push", "-u", remote, current_branch], cwd=repo, env=env)
 
-    body = build_intern_pr_body(summary=summary, tests=tests, ticket=ticket, notes=notes)
+    body = build_intern_pr_body(
+        summary=summary,
+        tests=tests,
+        ticket=ticket,
+        notes=notes,
+        preview_url=preview_url,
+    )
     command = [
         "gh",
         "pr",
@@ -66,7 +74,13 @@ def open_pull_request(
         command.insert(3, "--draft")
 
     url = _run(command, cwd=repo, env=env).strip()
-    return OpenPrResult(url=url, branch=current_branch, base=base_branch, title=title)
+    return OpenPrResult(
+        url=url,
+        branch=current_branch,
+        base=base_branch,
+        title=title,
+        preview_url=preview_url,
+    )
 
 
 def build_intern_pr_body(
@@ -75,6 +89,7 @@ def build_intern_pr_body(
     tests: str,
     ticket: str | None = None,
     notes: str | None = None,
+    preview_url: str | None = None,
 ) -> str:
     """Build a short, intern-coded PR body."""
     lines = []
@@ -92,6 +107,8 @@ def build_intern_pr_body(
     )
     if notes:
         lines.extend(["", "notes:", f"- {_clean_line(notes)}"])
+    if preview_url:
+        lines.extend(["", "preview:", f"- {_clean_line(preview_url)} (live ~1 min after CI)"])
     lines.extend(["", "review pls, I think this is the small version."])
     return "\n".join(lines)
 

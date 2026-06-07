@@ -26,6 +26,7 @@ class InternConfig:
     claude_model: str | None = "sonnet"
     permission_mode: str | None = "bypassPermissions"
     target_repo_path: Path | None = None
+    preview_url: str | None = None
     heartbeat_seconds: int = 30 * 60
     random_banter_chance: float = 0.10
     max_concurrent_tasks: int = 1
@@ -44,6 +45,7 @@ class InternConfig:
             claude_model=os.getenv("INTERN_CLAUDE_MODEL", cls.claude_model) or None,
             permission_mode=os.getenv("INTERN_PERMISSION_MODE", cls.permission_mode) or None,
             target_repo_path=Path(target_repo).expanduser() if target_repo else None,
+            preview_url=os.getenv("INTERN_PREVIEW_URL") or None,
             heartbeat_seconds=_int_env("INTERN_HEARTBEAT_SECONDS", cls.heartbeat_seconds),
             random_banter_chance=_float_env("INTERN_RANDOM_BANTER_CHANCE", cls.random_banter_chance),
             max_concurrent_tasks=_int_env("INTERN_MAX_CONCURRENT_TASKS", cls.max_concurrent_tasks),

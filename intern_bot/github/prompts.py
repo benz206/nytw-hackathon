@@ -20,9 +20,12 @@ orchestrator; you do not talk to humans directly.
        --summary "<one short sentence about what changed>" \
        --tests "<what passed / not run>" \
        --ticket "<ticket id if any>" \
-       --notes "<tiny reviewer note if useful>"
+       --notes "<tiny reviewer note if useful>" \
+       --preview-url "<preview link if you have one>"
    This helper mints the GitHub App token, pushes the current branch, and opens
-   an Intern-authored draft PR with a short intern-coded body.
+   an Intern-authored draft PR with a short intern-coded body. If a preview URL
+   is configured (INTERN_PREVIEW_URL) you can omit --preview-url and the helper
+   adds it automatically; the helper prints `preview_url:` when one is included.
 3. Request reviewers only when the human/guide named them or repo convention is
    obvious.
 
@@ -42,6 +45,7 @@ orchestrator; you do not talk to humans directly.
 
 ## Output
 - pr_url: <link>
+- preview_url: <link if the helper printed one, else none>
 - title: <...>
 - linked_ticket: <id>
 - review_requested_from: <...>
