@@ -14,8 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REPLIT_USERNAME: ${{ vars.REPLIT_USERNAME }}
-  APP_NAME: ${{ vars.APP_NAME }}
+  APP_NAME: ${{ vars.APP_NAME }}             # Replit deployment name, e.g. task-manager-4
   DEPLOY_REPO: ${{ vars.DEPLOY_REPO }}        # owner/repo connected to Replit
   DEPLOY_BRANCH: replit-preview               # the single branch Replit watches
 
@@ -35,7 +34,6 @@ jobs:
           DEPLOY_REPO_TOKEN: ${{ secrets.DEPLOY_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          : "${REPLIT_USERNAME:?Set repo variable REPLIT_USERNAME}"
           : "${APP_NAME:?Set repo variable APP_NAME}"
           : "${DEPLOY_REPO:?Set repo variable DEPLOY_REPO (owner/repo)}"
           if [ -z "${DEPLOY_REPO_TOKEN:-}" ]; then
@@ -85,7 +83,7 @@ jobs:
         with:
           script: |
             const pr = Number(process.env.PR_NUMBER);
-            const url = `https://${process.env.APP_NAME}.${process.env.REPLIT_USERNAME}.replit.app`;
+            const url = `https://${process.env.APP_NAME}.replit.app`;
             const marker = "<!-- replit-preview-bot -->";
             const body = [
               marker,

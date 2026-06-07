@@ -490,7 +490,7 @@ Flow: intern opens/updates a PR -> Action force-pushes the PR code to the
 `replit-preview` branch of the deploy repo -> Replit (autoscale, connected to
 that branch) serves it -> a single PR comment posts the static preview URL.
 
-URL: `https://<APP_NAME>.<REPLIT_USERNAME>.replit.app`
+URL: `https://<APP_NAME>.replit.app` (e.g. `https://task-manager-4.replit.app`)
 
 Limitation: one preview is live at a time (latest deploy wins). A global
 concurrency lock serializes deploys.
@@ -498,8 +498,7 @@ concurrency lock serializes deploys.
 ### GitHub configuration (source repo)
 
 Variables (Settings -> Secrets and variables -> Actions -> Variables):
-- `REPLIT_USERNAME`
-- `APP_NAME`
+- `APP_NAME` - Replit deployment name (the label before `.replit.app`), e.g. `task-manager-4`
 - `DEPLOY_REPO` - deploy repo as `owner/repo`
 
 Secrets:
@@ -514,3 +513,5 @@ Secrets:
 - App binds `0.0.0.0` and listens on `process.env.PORT` (Python: `os.environ["PORT"]`).
   The included `intern_bot/preview_server.py` already does this and serves a
   status page plus a `/healthz` health check.
+- The deployment URL is `https://<APP_NAME>.replit.app` (single label, no
+  username segment), e.g. `https://task-manager-4.replit.app`.
